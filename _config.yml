@@ -1,5 +1,5 @@
-title: Just the Docs Template
-description: A starter template for a Jeykll site using the Just the Docs theme!
+title: Renef
+description: Dynamic Instrumentation Toolkit for Android
 theme: just-the-docs
 
 logo: "/assets/img/renef-logo.svg"
@@ -8,4 +8,32 @@ color_scheme: dark
 url: https://just-the-docs.github.io
 
 aux_links:
-  Template Repository: https://github.com/just-the-docs/just-the-docs-template
+  GitHub: https://github.com/ahmeth4n/renef
+
+aux_links_new_tab: true
+
+nav_enabled: true
+nav_sort: case_insensitive
+
+heading_anchors: true
+
+back_to_top: true
+back_to_top_text: "Back to top"
+
+footer_content: "Renef - Dynamic Instrumentation Toolkit for Android"
+
+callouts:
+  warning:
+    title: Warning
+    color: yellow
+  note:
+    title: Note
+    color: blue
+  tip:
+    title: Tip
+    color: green
+
+kramdown:
+  syntax_highlighter_opts:
+    block:
+      line_numbers: false
