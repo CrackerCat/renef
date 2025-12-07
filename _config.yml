@@ -1,6 +1,9 @@
 title: Renef
 description: Dynamic Instrumentation Toolkit for Android
-theme: just-the-docs
+remote_theme: just-the-docs/just-the-docs@v0.10.1
+plugins:
+  - jekyll-remote-theme
+  - jekyll-include-cache
 
 logo: "/assets/img/renef-logo.svg"
 color_scheme: dark
