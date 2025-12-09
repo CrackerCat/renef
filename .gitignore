@@ -1,0 +1,17 @@
+build/*
+tests/libsdk.so
+.vscode/*
+renef_inject
+test_payload/build/*
+tests/server/build/*
+renef
+test_inject
+renef_server
+test_attach
+src/agent/build/*
+src/agent/librenef*
+
+# External dependencies (auto-downloaded via make setup)
+external/lua/
+external/asio/
+external/capstone/
