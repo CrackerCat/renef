@@ -187,6 +187,11 @@ static void route_command(int client_fd, const char* cmd, size_t cmd_len) {
     const char* actual_cmd = main_cmd + 33;
     memmove(main_cmd, actual_cmd, strlen(actual_cmd) + 1);
 
+    if (filter[0] != '\0') {
+        size_t cmd_len_now = strlen(main_cmd);
+        snprintf(main_cmd + cmd_len_now, sizeof(main_cmd) - cmd_len_now, "~%s", filter);
+    }
+
     if (!cmd_dispatch(client_fd, main_cmd)) {
         const char* error = "{\"success\":false,\"error\":\"Unknown command\"}\n";
         write(client_fd, error, strlen(error));

@@ -16,13 +16,26 @@ static int cmd_ping(int fd, const char* args) {
 }
 
 static int cmd_list_apps(int fd, const char* args) {
-    (void)args;
+    const char* filter = NULL;
+    if (args && args[0] == '~' && args[1] != '\0') {
+        filter = args + 1;
+    }
+
     FILE *fp = popen("pm list packages", "r");
     if (fp) {
         char line[256];
         while (fgets(line, sizeof(line), fp)) {
             if (strncmp(line, "package:", 8) == 0) {
-                write(fd, line + 8, strlen(line + 8));
+                char* pkg_name = line + 8;
+                size_t len = strlen(pkg_name);
+                if (len > 0 && pkg_name[len - 1] == '\n') {
+                    pkg_name[len - 1] = '\0';
+                    len--;
+                }
+                if (filter == NULL || strstr(pkg_name, filter) != NULL) {
+                    write(fd, pkg_name, len);
+                    write(fd, "\n", 1);
+                }
             }
         }
         pclose(fp);

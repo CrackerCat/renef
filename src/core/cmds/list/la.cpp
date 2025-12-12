@@ -37,7 +37,12 @@ CommandResult ListAppsCommand::dispatch(int client_fd, const char* cmd_buffer, s
     }
 
 
-    std::string filter = extract_filter(cmd_buffer, cmd_size);
+    std::string clean_cmd(cmd_buffer, cmd_size);
+    while (!clean_cmd.empty() && (clean_cmd.back() == '\n' || clean_cmd.back() == '\r' || clean_cmd.back() == ' ' || clean_cmd.back() == '\0')) {
+        clean_cmd.pop_back();
+    }
+
+    std::string filter = extract_filter(clean_cmd.c_str(), clean_cmd.length());
     std::string command = build_agent_command("list_apps", filter);
     socket_helper.send_data(command.c_str(), command.length());
 
