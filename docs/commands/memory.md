@@ -102,19 +102,19 @@ For more advanced memory operations, use the `exec` command with Lua scripts:
 
 ```bash
 # String search with wildcards
-exec r = mem.search("native") mem.dump(r)
+exec r = Memory.search("native") Memory.dump(r)
 
 # Pattern search (ARM64)
-exec r = mem.search("FD 7B ?? A9") mem.dump(r)
+exec r = Memory.search("FD 7B ?? A9") Memory.dump(r)
 
 # Search in specific library
-exec r = mem.search("C0 03 5F D6", "libc.so") mem.dump(r)
+exec r = Memory.search("C0 03 5F D6", "libc.so") Memory.dump(r)
 
 # Read memory
-exec print(string.format("0x%X", mem.readU32(0x7f8a1c2b0)))
+exec print(string.format("0x%X", Memory.readU32(0x7f8a1c2b0)))
 
 # Write memory
-exec mem.writeU32(0x7f8a1c2b0, 0xD503201F)
+exec Memory.writeU32(0x7f8a1c2b0, 0xD503201F)
 ```
 
 See [Lua Memory API](../api/memory.md) for full documentation.
@@ -138,17 +138,17 @@ See [Lua Memory API](../api/memory.md) for full documentation.
 
 1. **Hex vs String**: The CLI `ms` command expects hex. For string search, convert to hex first or use Lua:
    ```bash
-   exec mem.dump(mem.search("mystring"))
+   exec Memory.dump(Memory.search("mystring"))
    ```
 
 2. **Large Searches**: Pattern search is limited to 50MB to prevent timeout. Use library filter for large apps:
    ```bash
-   exec mem.dump(mem.search("pattern", "libtarget.so"))
+   exec Memory.dump(Memory.search("pattern", "libtarget.so"))
    ```
 
 3. **Address Format**: All addresses are displayed and expected in hexadecimal with `0x` prefix.
 
 4. **Wildcards**: Only available via Lua API. Use `??` for any byte:
    ```bash
-   exec mem.dump(mem.search("FD 7B ?? A9"))
+   exec Memory.dump(Memory.search("FD 7B ?? A9"))
    ```

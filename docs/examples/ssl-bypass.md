@@ -147,7 +147,7 @@ strings libflutter.so | grep -i ssl_verify
 Or use Renef's memory search:
 
 ```bash
-exec mem.dump(mem.search("session_verify", "libflutter.so"))
+exec Memory.dump(Memory.search("session_verify", "libflutter.so"))
 ```
 
 ---
