@@ -546,18 +546,37 @@ std::string send_command(const std::string& command) {
         return "";
     }
 
-    int timeout = streaming ? 3600000 : 10000;
-    std::string response = conn.receive(timeout);
+    std::string full_response;
+    ColorManager& cm = ColorManager::instance();
 
-    if (!response.empty()) {
-        ColorManager& cm = ColorManager::instance();
-        std::cout << cm.response_color << response << RESET;
-        std::cout.flush();
+    if (streaming) {
+        // Streaming mode: loop with short timeout, check for 'q' key
+        while (true) {
+            if (check_quit_key()) {
+                std::cout << "\nExiting watch mode...\n";
+                break;
+            }
+
+            std::string chunk = conn.receive(100);
+            if (!chunk.empty()) {
+                std::cout << cm.response_color << chunk << RESET;
+                std::cout.flush();
+                full_response += chunk;
+            }
+        }
     } else {
-        std::cout << "(no response)\n";
+        // Normal mode: single receive with timeout
+        full_response = conn.receive(10000);
+
+        if (!full_response.empty()) {
+            std::cout << cm.response_color << full_response << RESET;
+            std::cout.flush();
+        } else {
+            std::cout << "(no response)\n";
+        }
     }
 
-    return response;
+    return full_response;
 }
 
 int main(int argc, char *argv[]) {
