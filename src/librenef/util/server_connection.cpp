@@ -91,23 +91,25 @@ std::string ServerConnection::receive(int timeout_ms) {
     pfd.fd = sock_fd;
     pfd.events = POLLIN;
 
+    if (poll(&pfd, 1, timeout_ms) <= 0) return "";
+
     while (true) {
-        int ret = poll(&pfd, 1, timeout_ms);
-        if (ret <= 0) break; 
+        ssize_t n = recv(sock_fd, buffer, sizeof(buffer) - 1, MSG_DONTWAIT);
 
-        if (pfd.revents & POLLIN) {
-            ssize_t n = recv(sock_fd, buffer, sizeof(buffer) - 1, 0);
-            if (n <= 0) break;
-
+        if (n > 0) {
             buffer[n] = '\0';
             result += buffer;
-
-            if (buffer[n - 1] == '\n') break;
-
-            timeout_ms = 100;
-        } else {
-            break;
+            continue;
         }
+
+        if (n == 0) break;
+
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (poll(&pfd, 1, 50) <= 0) break;
+            continue;
+        }
+
+        break;
     }
 
     return result;

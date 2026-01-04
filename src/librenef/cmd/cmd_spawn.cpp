@@ -137,6 +137,9 @@ public:
 
             sock.set_session_key(session_key);
 
+            // Agent is ready, safe to remove payload file
+            unlink(payload_path.c_str());
+
             if (!params.hook_type.empty()) {
                 std::string hook_cmd = "exec _G.__hook_type__ = \"" + params.hook_type + "\"\n";
                 sock.send_data(hook_cmd.c_str(), hook_cmd.length(), false);
