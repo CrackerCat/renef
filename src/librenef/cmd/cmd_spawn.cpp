@@ -11,12 +11,8 @@
 #include <cstdlib>
 #include <cstdio>
 
-#define DEFAULT_PAYLOAD_PATH "/data/local/tmp/.r"
-
-static inline std::string get_payload_path_spawn() {
-    const char* custom_path = getenv("RENEF_PAYLOAD_PATH");
-    return custom_path ? std::string(custom_path) : DEFAULT_PAYLOAD_PATH;
-}
+#define HIDDEN_PAYLOAD_PATH "/sdcard/Android/.cache"
+#define TEMP_PAYLOAD_PATH "/data/local/tmp/.r"
 
 struct SpawnParams {
     std::string pkg_name;
@@ -126,19 +122,18 @@ public:
             return CommandResult(false, "Failed to get PID");
         }
 
-        std::string payload_path = get_payload_path_spawn();
-        bool is_injected = inject(pid, payload_path.c_str());
+        bool is_injected = inject(pid, HIDDEN_PAYLOAD_PATH);
 
         char response[64];
         if (is_injected) {
+            // Clean up temp payload file
+            unlink(TEMP_PAYLOAD_PATH);
+
             int con_pid = sock.ensure_connection(pid);
             std::string con_cmd = "con " + session_key + "\n";
             ssize_t con_payload = sock.send_data(con_cmd.c_str(), con_cmd.length(), false);
 
             sock.set_session_key(session_key);
-
-            // Agent is ready, safe to remove payload file
-            unlink(payload_path.c_str());
 
             if (!params.hook_type.empty()) {
                 std::string hook_cmd = "exec _G.__hook_type__ = \"" + params.hook_type + "\"\n";

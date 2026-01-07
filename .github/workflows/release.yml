@@ -303,7 +303,7 @@ jobs:
 
           ### What's New
             - Socket implementation and folder structure changed.
-            - For old versions, agent file (`.r`) keep storing at /data/local/tmp folder. We're fixed with agent file deleted when injection completed.
+            - For old versions, agent file (`.r`) keep storing at /data/local/tmp folder. We're changed with agent file stored in Android system/user folders.
             - Plugin support implemented. Now developers can create their own Renef plugins if they wish. 
             
             

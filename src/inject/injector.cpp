@@ -42,7 +42,7 @@
     #error "Unsupported architecture. Please compile for ARM or x86."
 #endif
 
-#define DEFAULT_PAYLOAD_PATH "/data/local/tmp/.r"
+#define HIDDEN_PAYLOAD_PATH "/sdcard/Android/.cache"
 #define TEMP_PAYLOAD_PATH "/data/local/tmp/.r"
 
 static bool copy_file(const char* src, const char* dst) {

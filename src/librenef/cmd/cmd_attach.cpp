@@ -10,12 +10,8 @@
 #include <iostream>
 #include <cstdlib>
 
-#define DEFAULT_PAYLOAD_PATH "/data/local/tmp/.r"
-
-static inline std::string get_payload_path() {
-    const char* custom_path = getenv("RENEF_PAYLOAD_PATH");
-    return custom_path ? std::string(custom_path) : DEFAULT_PAYLOAD_PATH;
-}
+#define HIDDEN_PAYLOAD_PATH "/sdcard/Android/.cache"
+#define TEMP_PAYLOAD_PATH "/data/local/tmp/.r"
 
 static std::string get_device_id_attach() {
     const char* device = getenv("RENEF_DEVICE_ID");
@@ -104,17 +100,16 @@ public:
             return CommandResult(false, "Invalid PID");
         }
 
-        std::string payload_path = get_payload_path();
-        bool is_injected = inject(params.pid, payload_path.c_str());
+        bool is_injected = inject(params.pid, HIDDEN_PAYLOAD_PATH);
         if (is_injected) {
+            // Clean up temp payload file
+            unlink(TEMP_PAYLOAD_PATH);
+
             int con_pid = sock.ensure_connection(params.pid);
             std::string con_cmd = "con " + session_key + "\n";
             ssize_t con_payload = sock.send_data(con_cmd.c_str(), con_cmd.length(), false);
 
             sock.set_session_key(session_key);
-
-            // Agent is ready, safe to remove payload file
-            unlink(payload_path.c_str());
 
             if (!params.hook_type.empty()) {
                 std::string hook_cmd = "exec _G.__hook_type__ = \"" + params.hook_type + "\"\n";

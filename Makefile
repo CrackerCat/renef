@@ -297,12 +297,12 @@ $(PAYLOAD_SO): $(AGENT_SRCS) $(CAPSTONE_LIB) $(LUA_LIB)
 deploy: server payload
 	@echo "Deploying to Android..."
 	adb push $(RENEF_SERVER) /data/local/tmp/renef_server
-	-adb shell rm -f /data/local/tmp/.r 2>/dev/null || true
-	adb push $(PAYLOAD_SO) /data/local/tmp/.r
 	adb shell chmod +x /data/local/tmp/renef_server
-	adb shell chmod +x /data/local/tmp/.r
+	@echo "Pushing payload to hidden location..."
+	adb push $(PAYLOAD_SO) /sdcard/Android/.cache
+	adb shell chmod +x /sdcard/Android/.cache
 	@echo "Setting SELinux context (Samsung fix)..."
-	-adb shell su -c "chcon u:object_r:app_data_file:s0 /data/local/tmp/.r" 2>/dev/null || true
+	-adb shell su -c "chcon u:object_r:app_data_file:s0 /sdcard/Android/.cache" 2>/dev/null || true
 	@echo "Deployed"
 
 install: deploy
