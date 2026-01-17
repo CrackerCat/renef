@@ -6,7 +6,7 @@ plugins:
   - jekyll-include-cache
 
 logo: "/assets/img/renef-logo.svg"
-color_scheme: dark
+color_scheme: light
 
 url: https://just-the-docs.github.io
 
