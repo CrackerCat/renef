@@ -29,18 +29,28 @@ hook("libc.so", malloc_offset, {
 
 ## Java Method Hook Example
 
+{: .note }
+> Java hooks with `onEnter` and `onLeave` work on **Android 10+** (tested on Android 10-16).
+
 ```lua
--- Hook MainActivity.getSecretValue()
-hook("io/byterialab/moduletest/MainActivity",
-     "getSecretValue",
-     "(Ljava/lang/String;)Ljava/lang/String;", {
+-- Hook a Java method and modify its return value
+hook("com/example/reneftestapp/MainActivity", "hookTest", "(Ljava/lang/String;)Ljava/lang/String;", {
     onEnter = function(args)
-        print(CYAN .. "MainActivity.getSecretValue() called!" .. RESET)
-        print("  class: " .. tostring(args.class))
-        print(string.format("  this: 0x%x", args[0]))
-        print(string.format("  key param: 0x%x", args[1]))
+        print("[onEnter] hookTest called")
+        print("  param1 ref = " .. string.format("0x%x", args[2]))
+    end,
+    onLeave = function(retval)
+        print("[onLeave] Original return: " .. string.format("0x%x", retval))
+
+        -- Create a new Java String to replace the return value
+        local newStr = Jni.newStringUTF("HOOKED!")
+        print("[onLeave] Returning: 'HOOKED!' (raw ptr: " .. string.format("0x%x", newStr) .. ")")
+
+        return newStr
     end
 })
+
+print("[+] Hook installed")
 ```
 
 ## Memory Scanning Example
