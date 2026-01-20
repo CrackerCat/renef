@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(renef VERSION 0.2.0)
+project(renef VERSION 0.2.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,7 +23,7 @@ target_include_directories(capstone INTERFACE
 # Compiler warnings
 add_compile_options(-Wall -Wextra)
 
-# librenef - core library
+# librenef - core library (build both static and shared)
 add_library(renef_core STATIC
     # Command registry
     src/librenef/cmd/cmd.cpp
@@ -60,17 +60,46 @@ add_library(renef_core STATIC
 
     # Plugin system
     src/librenef/plugin/plugin.cpp
+
+    # C API Binding
+    src/librenef/binding/renef.cpp
 )
 
 target_include_directories(renef_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef/binding
     ${CMAKE_CURRENT_SOURCE_DIR}/src/inject
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 
 target_link_libraries(renef_core PUBLIC
     capstone
+)
+
+# Shared library for Python/FFI bindings
+add_library(renef_shared SHARED
+    src/librenef/binding/renef.cpp
+    src/librenef/util/socket.cpp
+    src/librenef/util/crypto.cpp
+    src/librenef/transport/uds.cpp
+    src/librenef/transport/tcp.cpp
+    src/inject/injector.cpp
+)
+
+target_include_directories(renef_shared PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef/binding
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/inject
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+
+target_link_libraries(renef_shared PUBLIC capstone)
+set_target_properties(renef_shared PROPERTIES
+    OUTPUT_NAME "renef"
+    VERSION 0.2.1
+    SOVERSION 0
 )
 
 # Find readline library

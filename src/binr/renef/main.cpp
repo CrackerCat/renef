@@ -24,6 +24,7 @@
 
 static std::vector<std::pair<std::string, std::string>> global_commands;
 static std::string g_device_id;
+static bool g_device_ready = false;
 #define DEFAULT_TCP_PORT 1907
 
 static std::map<std::string, std::vector<std::pair<std::string, std::string>>> lua_api = {
@@ -323,7 +324,6 @@ bool check_adb_devices(std::string& device_id) {
     pclose(pipe);
 
     if (devices.empty()) {
-        std::cerr << "ERROR: No ADB devices found. Please connect a device.\n";
         return false;
     }
 
@@ -554,6 +554,8 @@ std::string send_command(const std::string& command) {
         while (true) {
             if (check_quit_key()) {
                 std::cout << "\nExiting watch mode...\n";
+                conn.send("q\n");
+                conn.receive(500);
                 break;
             }
 
@@ -624,18 +626,21 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!check_adb_devices(device_id)) {
-        return 1;
-    }
+    bool device_connected = check_adb_devices(device_id);
     g_device_id = device_id;
 
     if (!g_device_id.empty()) {
         setenv("RENEF_DEVICE_ID", g_device_id.c_str(), 1);
     }
 
-    std::cout << "[*] Setting up ADB port forwarding...\n";
-    if (!setup_adb_forward(g_device_id)) {
-        std::cerr << "ERROR: Failed to setup port forwarding. Continuing anyway...\n";
+    if (device_connected) {
+        std::cout << "[*] Setting up ADB port forwarding...\n";
+        if (!setup_adb_forward(g_device_id)) {
+            std::cerr << "WARNING: Failed to setup port forwarding.\n";
+        }
+        g_device_ready = true;
+    } else {
+        std::cout << "[*] No device connected. Some commands will not work until a device is connected.\n";
     }
 
     std::cout << "\nRENEF Interactive Shell\n";
@@ -655,6 +660,24 @@ int main(int argc, char *argv[]) {
 
     bool auto_started = false;
     if (!attach_pid.empty() || !spawn_app.empty()) {
+        // Ensure device is connected for CLI spawn/attach
+        if (!g_device_ready) {
+            std::string new_device_id = g_device_id;
+            if (check_adb_devices(new_device_id)) {
+                g_device_id = new_device_id;
+                if (!g_device_id.empty()) {
+                    setenv("RENEF_DEVICE_ID", g_device_id.c_str(), 1);
+                }
+                std::cout << "[*] Setting up ADB port forwarding...\n";
+                if (setup_adb_forward(g_device_id)) {
+                    g_device_ready = true;
+                }
+            } else {
+                std::cerr << "ERROR: No ADB device connected. Cannot spawn/attach.\n";
+                return 1;
+            }
+        }
+
         std::string start_cmd;
 
         if (!spawn_app.empty()) {
@@ -977,6 +1000,24 @@ int main(int argc, char *argv[]) {
         }
 
         bool is_spawn_or_attach = (command.rfind("spawn ", 0) == 0 || command.rfind("attach ", 0) == 0);
+
+        if (is_spawn_or_attach && !g_device_ready) {
+            std::string new_device_id = g_device_id;
+            if (check_adb_devices(new_device_id)) {
+                g_device_id = new_device_id;
+                if (!g_device_id.empty()) {
+                    setenv("RENEF_DEVICE_ID", g_device_id.c_str(), 1);
+                }
+                std::cout << "[*] Setting up ADB port forwarding...\n";
+                if (setup_adb_forward(g_device_id)) {
+                    g_device_ready = true;
+                }
+            } else {
+                std::cerr << "ERROR: No ADB device connected. Please connect a device first.\n";
+                free(input);
+                continue;
+            }
+        }
 
         std::string response = send_command(processed_cmd);
 

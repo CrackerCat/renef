@@ -82,11 +82,12 @@ public:
 
                 if (pfds[1].revents & POLLIN) {
                     char cmd[32];
-                    ssize_t n = recv(client_fd, cmd, sizeof(cmd) - 1, MSG_PEEK);
+                    ssize_t n = recv(client_fd, cmd, sizeof(cmd) - 1, 0);
                     if (n <= 0) {
                         running = false;
                     } else {
-                        std::cout << "[WATCH] Client sent data, exiting watch mode\n";
+                        cmd[n] = '\0';
+                        std::cout << "[WATCH] Client sent data: '" << cmd << "', exiting watch mode\n";
                         running = false;
                     }
                 }
@@ -98,9 +99,6 @@ public:
 
         fcntl(sock, F_SETFL, flags);
         fcntl(client_fd, F_SETFL, client_flags);
-
-        const char* end_msg = "Watch stopped\n";
-        write(client_fd, end_msg, strlen(end_msg));
 
         return CommandResult(true, "Watch completed");
     }
