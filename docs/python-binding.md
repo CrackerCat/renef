@@ -1,8 +1,7 @@
 ---
-title: Python API Reference
+title: Python Binding
 layout: default
-parent: Lua API Reference
-nav_order: 7
+nav_order: 9
 ---
 
 # Python API Reference
