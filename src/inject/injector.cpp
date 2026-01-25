@@ -8,6 +8,8 @@
 #include <chrono>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/mman.h>
+#include <elf.h>
 #include "shellcode.h"
 
 #ifndef __NR_memfd_create
@@ -27,20 +29,62 @@
 #endif
 
 #if defined(__aarch64__) || defined(__arm64__)
-    #define LIBC_PATH "/apex/com.android.runtime/lib64/bionic/libc.so"
-    #define LIBDL_PATH "/apex/com.android.runtime/lib64/bionic/libdl.so"
+    static const char* LIBC_PATHS[] = {
+        "/apex/com.android.runtime/lib64/bionic/libc.so",  // Android 10+
+        "/system/lib64/libc.so",                            // Android 8-9
+        nullptr
+    };
+    static const char* LIBDL_PATHS[] = {
+        "/apex/com.android.runtime/lib64/bionic/libdl.so",
+        "/system/lib64/libdl.so",
+        nullptr
+    };
 #elif defined(__arm__)
-    #define LIBC_PATH "/apex/com.android.runtime/lib/bionic/libc.so"
-    #define LIBDL_PATH "/apex/com.android.runtime/lib/bionic/libdl.so"
+    static const char* LIBC_PATHS[] = {
+        "/apex/com.android.runtime/lib/bionic/libc.so",
+        "/system/lib/libc.so",
+        nullptr
+    };
+    static const char* LIBDL_PATHS[] = {
+        "/apex/com.android.runtime/lib/bionic/libdl.so",
+        "/system/lib/libdl.so",
+        nullptr
+    };
 #elif defined(__x86_64__) || defined(__amd64__)
-    #define LIBC_PATH "/apex/com.android.runtime/lib64/bionic/libc.so"
-    #define LIBDL_PATH "/apex/com.android.runtime/lib64/bionic/libdl.so"
+    static const char* LIBC_PATHS[] = {
+        "/apex/com.android.runtime/lib64/bionic/libc.so",
+        "/system/lib64/libc.so",
+        nullptr
+    };
+    static const char* LIBDL_PATHS[] = {
+        "/apex/com.android.runtime/lib64/bionic/libdl.so",
+        "/system/lib64/libdl.so",
+        nullptr
+    };
 #elif defined(__i386__) || defined(__i686__)
-    #define LIBC_PATH "/apex/com.android.runtime/lib/bionic/libc.so"
-    #define LIBDL_PATH "/apex/com.android.runtime/lib/bionic/libdl.so"
+    static const char* LIBC_PATHS[] = {
+        "/apex/com.android.runtime/lib/bionic/libc.so",
+        "/system/lib/libc.so",
+        nullptr
+    };
+    static const char* LIBDL_PATHS[] = {
+        "/apex/com.android.runtime/lib/bionic/libdl.so",
+        "/system/lib/libdl.so",
+        nullptr
+    };
 #else
     #error "Unsupported architecture. Please compile for ARM or x86."
 #endif
+
+// Find the actual path of a library by checking multiple locations
+static const char* resolve_lib_path(const char** paths) {
+    for (int i = 0; paths[i] != nullptr; i++) {
+        if (access(paths[i], R_OK) == 0) {
+            return paths[i];
+        }
+    }
+    return nullptr;
+}
 
 #define HIDDEN_PAYLOAD_PATH "/sdcard/Android/.cache"
 #define TEMP_PAYLOAD_PATH "/data/local/tmp/.r"
@@ -112,22 +156,86 @@ std::vector<uint8_t> read_memory(int pid, uintptr_t addr, size_t size) {
     return buf;
 }
 
-uintptr_t find_symbol(const char* libc_path, const char* symbol_name) {
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "readelf -s %s | grep ' %s$' | head -1 | awk '{print $2}'",
-             libc_path, symbol_name);
-
-    FILE* fp = popen(cmd, "r");
-    if (!fp) return 0;
-
-    char result[64];
-    if (fgets(result, sizeof(result), fp)) {
-        pclose(fp);
-        return strtoul(result, NULL, 16);
+uintptr_t find_symbol(const char* lib_path, const char* symbol_name) {
+    int fd = open(lib_path, O_RDONLY);
+    if (fd < 0) {
+        std::cerr << "  ✗ Cannot open " << lib_path << "\n";
+        return 0;
     }
 
-    pclose(fp);
-    return 0;
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        return 0;
+    }
+
+    void* map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+
+    if (map == MAP_FAILED) {
+        return 0;
+    }
+
+    uintptr_t result = 0;
+    auto* ehdr = static_cast<Elf64_Ehdr*>(map);
+
+    // Verify ELF magic
+    if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) {
+        munmap(map, st.st_size);
+        return 0;
+    }
+
+    auto* shdr = reinterpret_cast<Elf64_Shdr*>(static_cast<uint8_t*>(map) + ehdr->e_shoff);
+
+    Elf64_Shdr* dynsym = nullptr;
+    Elf64_Shdr* dynstr = nullptr;
+    Elf64_Shdr* symtab = nullptr;
+    Elf64_Shdr* strtab = nullptr;
+
+    Elf64_Shdr* shstrtab = &shdr[ehdr->e_shstrndx];
+    const char* shstrtab_data = static_cast<const char*>(map) + shstrtab->sh_offset;
+
+    for (int i = 0; i < ehdr->e_shnum; i++) {
+        const char* name = shstrtab_data + shdr[i].sh_name;
+        if (strcmp(name, ".dynsym") == 0) dynsym = &shdr[i];
+        else if (strcmp(name, ".dynstr") == 0) dynstr = &shdr[i];
+        else if (strcmp(name, ".symtab") == 0) symtab = &shdr[i];
+        else if (strcmp(name, ".strtab") == 0) strtab = &shdr[i];
+    }
+
+    if (dynsym && dynstr) {
+        auto* sym = reinterpret_cast<Elf64_Sym*>(static_cast<uint8_t*>(map) + dynsym->sh_offset);
+        const char* str = static_cast<const char*>(map) + dynstr->sh_offset;
+        size_t sym_count = dynsym->sh_size / sizeof(Elf64_Sym);
+
+        for (size_t i = 0; i < sym_count; i++) {
+            if (sym[i].st_name && sym[i].st_value != 0) {
+                if (strcmp(str + sym[i].st_name, symbol_name) == 0) {
+                    result = sym[i].st_value;
+                    goto done;
+                }
+            }
+        }
+    }
+
+    if (!result && symtab && strtab) {
+        auto* sym = reinterpret_cast<Elf64_Sym*>(static_cast<uint8_t*>(map) + symtab->sh_offset);
+        const char* str = static_cast<const char*>(map) + strtab->sh_offset;
+        size_t sym_count = symtab->sh_size / sizeof(Elf64_Sym);
+
+        for (size_t i = 0; i < sym_count; i++) {
+            if (sym[i].st_name && sym[i].st_value != 0) {
+                if (strcmp(str + sym[i].st_name, symbol_name) == 0) {
+                    result = sym[i].st_value;
+                    goto done;
+                }
+            }
+        }
+    }
+
+done:
+    munmap(map, st.st_size);
+    return result;
 }
 
 uintptr_t find_library_base(int pid, const char* lib_name) {
@@ -217,12 +325,30 @@ bool inject(int pid, const char* so_path) {
     std::cout << "  ✓ 0x" << std::hex << libc_base << std::dec << "\n";
 
     std::cout << "[2/7] Finding symbols...\n";
-    uintptr_t malloc_offset = find_symbol(LIBC_PATH, "malloc");
-    uintptr_t timezone_offset = find_symbol(LIBC_PATH, "timezone");
-    uintptr_t dlopen_offset = find_symbol(LIBDL_PATH, "dlopen");
+
+    const char* libc_path = resolve_lib_path(LIBC_PATHS);
+    const char* libdl_path = resolve_lib_path(LIBDL_PATHS);
+
+    if (!libc_path) {
+        std::cerr << "  ✗ Cannot find libc.so on this device\n";
+        return false;
+    }
+    if (!libdl_path) {
+        std::cerr << "  ✗ Cannot find libdl.so on this device\n";
+        return false;
+    }
+
+    std::cout << "  → Using libc: " << libc_path << "\n";
+    std::cout << "  → Using libdl: " << libdl_path << "\n";
+
+    uintptr_t malloc_offset = find_symbol(libc_path, "malloc");
+    uintptr_t timezone_offset = find_symbol(libc_path, "timezone");
+    uintptr_t dlopen_offset = find_symbol(libdl_path, "dlopen");
 
     if (!malloc_offset || !timezone_offset || !dlopen_offset) {
-        std::cerr << " Failed to find symbols\n";
+        std::cerr << "  ✗ Failed to find symbols (malloc=" << std::hex << malloc_offset
+                  << ", timezone=" << timezone_offset
+                  << ", dlopen=" << dlopen_offset << ")\n" << std::dec;
         return false;
     }
 
