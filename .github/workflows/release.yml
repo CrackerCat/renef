@@ -302,14 +302,37 @@ jobs:
           Dynamic Instrumentation Toolkit for Android ARM64
 
           ### What's New
-            - Java Hook Support: Added ability to hook Java methods at ART runtime level. You can now manipulate method parameters and return values using onEnter/onLeave callbacks.
-            - File API: New Lua API for file system operations. Includes File.read(), File.readlink(), File.exists() and File.fdpath() functions.
-            - Jni API: New Lua API providing access to JNI functions. Create and manipulate Java Strings using Jni.newStringUTF(), Jni.getStringUTF() and related functions.
-            - Android 11+ Compatibility: Fixed JNI reference decoding issues. Local references are now properly resolved using DecodeJObject mechanism.
+            - **Nested Java Hook Support**: Full support for recursive/nested Java method hooks. When a hooked method calls another hooked method, both hooks trigger correctly.
 
-            (Example Java hook usage can be found in [scripts/examples/java_hook.lua](https://github.com/Ahmeth4n/renef/blob/main/scripts/examples/java_hook.lua))
+            \`\`\`java
+            // Java code
+            public String parentHook(String s) {
+                return childHook(s);  // calls another hooked method
+            }
+            \`\`\`
 
-            Feel free to contributing!
+            \`\`\`lua
+            -- Both hooks work correctly
+            hook("com/example/App", "parentHook", "(Ljava/lang/String;)Ljava/lang/String;", {
+                onEnter = function(args) print("[PARENT] onEnter") end,
+                onLeave = function(ret) print("[PARENT] onLeave") return ret end
+            })
+            hook("com/example/App", "childHook", "(Ljava/lang/String;)Ljava/lang/String;", {
+                onEnter = function(args) print("[CHILD] onEnter") end,
+                onLeave = function(ret) print("[CHILD] onLeave") return ret end
+            })
+            \`\`\`
+
+            **Output:**
+            \`\`\`
+            [PARENT] onEnter
+            [CHILD] onEnter
+            [CHILD] onLeave
+            [PARENT] onLeave
+            \`\`\`
+
+            - **File API Fix**: File.read() now correctly handles /proc files and other special files.
+
           ${COMMITS}
 
           ### Downloads
