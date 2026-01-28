@@ -160,7 +160,7 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/lua/api_file.c \
               src/agent/lua/api_jni.c
 
-.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins
+.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local
 
 all: client server payload
 
@@ -337,6 +337,86 @@ clean-capstone:
 clean-all: clean clean-capstone
 	@echo "Full clean completed"
 
+# =============================================================================
+# Android Client (for Termux / on-device usage)
+# =============================================================================
+
+RENEF_CLIENT_ANDROID := $(ANDROID_BUILD)/renef
+
+# Client sources for Android (same as server uses librenef)
+CLIENT_ANDROID_SRCS := src/binr/renef/main.cpp \
+                       src/binr/renef/tui/memscan_tui.cpp \
+                       src/librenef/cmd/cmd.cpp \
+                       src/librenef/cmd/cmd_ping.cpp \
+                       src/librenef/cmd/cmd_attach.cpp \
+                       src/librenef/cmd/cmd_spawn.cpp \
+                       src/librenef/cmd/cmd_list.cpp \
+                       src/librenef/cmd/cmd_inspect.cpp \
+                       src/librenef/cmd/cmd_eval.cpp \
+                       src/librenef/cmd/cmd_load.cpp \
+                       src/librenef/cmd/cmd_watch.cpp \
+                       src/librenef/cmd/cmd_memscan.cpp \
+                       src/librenef/cmd/cmd_hooks.cpp \
+                       src/librenef/cmd/cmd_sec.cpp \
+                       src/librenef/cmd/cmd_memdump.cpp \
+                       src/librenef/cmd/cmd_hookgen.cpp \
+                       src/librenef/cmd/cmd_plugin.cpp \
+                       src/librenef/transport/server.cpp \
+                       src/librenef/transport/uds.cpp \
+                       src/librenef/transport/tcp.cpp \
+                       src/librenef/util/string.cpp \
+                       src/librenef/util/crypto.cpp \
+                       src/librenef/util/socket.cpp \
+                       src/librenef/util/server_connection.cpp \
+                       src/librenef/plugin/plugin.cpp \
+                       src/librenef/binding/renef.cpp \
+                       src/inject/injector.cpp
+
+CLIENT_ANDROID_CXXFLAGS := -std=c++17 \
+                           $(SERVER_OPT_FLAGS) \
+                           -DRENEF_CLI_BUILD \
+                           -DRENEF_NO_READLINE \
+                           -Isrc/librenef/include \
+                           -Isrc/librenef \
+                           -Isrc/binr/renef/tui \
+                           -Isrc/inject \
+                           -Iexternal \
+                           -Iexternal/asio/include \
+                           -Iexternal/capstone/include \
+                           -DASIO_STANDALONE \
+                           -static-libstdc++ \
+                           -Wall -Wextra
+
+CLIENT_ANDROID_LDFLAGS := -Wl,--whole-archive $(CAPSTONE_LIB) -Wl,--no-whole-archive -ldl
+
+client-android: $(RENEF_CLIENT_ANDROID)
+
+$(RENEF_CLIENT_ANDROID): $(CLIENT_ANDROID_SRCS) $(CAPSTONE_LIB) $(ASIO_HEADER)
+	@echo "Building renef client for Android ARM64 ($(BUILD_MODE))..."
+	@echo "Note: Building without readline (use basic input in Termux)"
+	@mkdir -p $(ANDROID_BUILD)
+	$(CLANGXX) $(CLIENT_ANDROID_CXXFLAGS) $(CLIENT_ANDROID_SRCS) -o $@ $(CLIENT_ANDROID_LDFLAGS)
+	@if [ "$(BUILD_MODE)" = "release" ]; then \
+		$(TOOLCHAIN)/bin/llvm-strip $@ 2>/dev/null || true; \
+	fi
+	@echo "Built: $@"
+
+# Deploy all binaries for local/Termux usage
+deploy-local: server payload client-android
+	@echo "Deploying all binaries for local usage..."
+	adb push $(RENEF_SERVER) /data/local/tmp/renef_server
+	adb push $(RENEF_CLIENT_ANDROID) /data/local/tmp/renef
+	adb shell chmod +x /data/local/tmp/renef_server
+	adb shell chmod +x /data/local/tmp/renef
+	adb push $(PAYLOAD_SO) /sdcard/Android/.cache
+	-adb shell su -c "chcon u:object_r:app_data_file:s0 /sdcard/Android/.cache" 2>/dev/null || true
+	@echo ""
+	@echo "Deployed to /data/local/tmp/"
+	@echo "Usage in Termux/ADB shell:"
+	@echo "  1. su"
+	@echo "  2. /data/local/tmp/renef_server &"
+	@echo "  3. /data/local/tmp/renef --local"
+
 info:
 	@echo "Build Configuration:"
 	@echo "  Host: $(HOST_OS)/$(HOST_ARCH)"
@@ -344,5 +424,6 @@ info:
 	@echo "  NDK Host: $(NDK_HOST)"
 	@echo "  Mode: $(BUILD_MODE)"
 	@echo "  Client: Native build for host"
+	@echo "  Client Android: Cross-compile to ARM64 (no readline)"
 	@echo "  Server: Cross-compile to ARM64 Android"
 	@echo "  Payload: Cross-compile to ARM64 Android"

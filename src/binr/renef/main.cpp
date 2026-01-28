@@ -13,8 +13,10 @@
 #include <renef/cmd.h>
 #include <renef/colors.h>
 #include <renef/server_connection.h>
+#ifndef RENEF_NO_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
+#endif
 #include <termios.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -25,7 +27,9 @@
 static std::vector<std::pair<std::string, std::string>> global_commands;
 static std::string g_device_id;
 static bool g_device_ready = false;
+static bool g_local_mode = false;
 #define DEFAULT_TCP_PORT 1907
+#define DEFAULT_UDS_PATH "@com.android.internal.os.RuntimeInit"
 
 static std::map<std::string, std::vector<std::pair<std::string, std::string>>> lua_api = {
     {"Module", {
@@ -57,6 +61,28 @@ static std::map<std::string, std::vector<std::pair<std::string, std::string>>> l
 
 static bool g_lua_context = false;
 
+#ifdef RENEF_NO_READLINE
+// Simple readline replacement for builds without readline library
+static char* simple_readline(const char* prompt) {
+    std::cout << prompt;
+    std::cout.flush();
+    std::string line;
+    if (!std::getline(std::cin, line)) {
+        return nullptr;
+    }
+    char* result = (char*)malloc(line.size() + 1);
+    if (result) {
+        strcpy(result, line.c_str());
+    }
+    return result;
+}
+#define readline simple_readline
+#define add_history(x) ((void)0)
+#define rl_bind_key(k, f) ((void)0)
+#define rl_variable_bind(k, v) ((void)0)
+#endif
+
+#ifndef RENEF_NO_READLINE
 char* lua_api_generator(const char* text, int state) {
     static size_t list_index;
     static std::string prefix;
@@ -132,6 +158,7 @@ char* command_generator(const char* text, int state) {
 
     return NULL;
 }
+#endif // RENEF_NO_READLINE
 
 static std::map<std::string, std::string> local_command_descs = {
     {"msi", "Interactive memory scan with TUI (msi <hex_pattern>)"},
@@ -141,6 +168,7 @@ static std::map<std::string, std::string> local_command_descs = {
     {"q", "Exit"}
 };
 
+#ifndef RENEF_NO_READLINE
 extern "C" void display_matches(char** matches, int num_matches, int max_length) {
     if (!matches || num_matches <= 0) {
         return;
@@ -241,6 +269,7 @@ char** command_completion(const char* text, int start, int end) {
     rl_attempted_completion_over = 1;
     return rl_completion_matches(text, command_generator);
 }
+#endif // RENEF_NO_READLINE
 
 void show_help() {
     printf("\nAvailable commands:\n");
@@ -527,11 +556,25 @@ std::string send_command(const std::string& command) {
     ServerConnection& conn = ServerConnection::instance();
 
     if (!conn.is_connected()) {
-        if (!conn.connect("127.0.0.1", DEFAULT_TCP_PORT)) {
-            std::cerr << "Error: Cannot connect to server\n";
-            std::cerr << "\nMake sure:\n";
-            std::cerr << "1. renef_server is running on Android device\n";
-            std::cerr << "2. adb forward is set: adb forward tcp:1907 localabstract:com.android.internal.os.RuntimeInit\n";
+        bool connected = false;
+        if (g_local_mode) {
+            // Local mode: connect via UDS directly
+            connected = conn.connect(DEFAULT_UDS_PATH, 0);
+            if (!connected) {
+                std::cerr << "Error: Cannot connect to server via UDS\n";
+                std::cerr << "\nMake sure renef_server is running on the device\n";
+            }
+        } else {
+            // Remote mode: connect via TCP (through ADB forward)
+            connected = conn.connect("127.0.0.1", DEFAULT_TCP_PORT);
+            if (!connected) {
+                std::cerr << "Error: Cannot connect to server\n";
+                std::cerr << "\nMake sure:\n";
+                std::cerr << "1. renef_server is running on Android device\n";
+                std::cerr << "2. adb forward is set: adb forward tcp:1907 localabstract:com.android.internal.os.RuntimeInit\n";
+            }
+        }
+        if (!connected) {
             return "";
         }
     }
@@ -617,30 +660,42 @@ int main(int argc, char *argv[]) {
             std::cout << "  -a, --attach <pid>       Attach to process by PID\n";
             std::cout << "  -s, --spawn <app>        Spawn application\n";
             std::cout << "  --hook <type>            Hook type: trampoline (default) or pltgot\n";
+            std::cout << "  --local                  Local mode: connect via UDS (for Termux/on-device)\n";
             std::cout << "  -h, --help               Show this help\n";
             std::cout << "\nExamples:\n";
             std::cout << "  " << argv[0] << " -s com.example.app -l script.lua\n";
             std::cout << "  " << argv[0] << " -s com.example.app --hook pltgot\n";
             std::cout << "  " << argv[0] << " -a 1234 --hook=pltgot -l hook.lua\n";
+            std::cout << "  " << argv[0] << " --local -s com.example.app    # On-device usage\n";
             return 0;
+        }else if(arg == "--local"){
+            // Local mode: connect directly via UDS, skip ADB
+            std::cout << "[*] Local mode enabled (direct UDS connection)\n";
+            g_local_mode = true;
         }
     }
 
-    bool device_connected = check_adb_devices(device_id);
-    g_device_id = device_id;
+    // Skip ADB setup in local mode
+    if (!g_local_mode) {
+        bool device_connected = check_adb_devices(device_id);
+        g_device_id = device_id;
 
-    if (!g_device_id.empty()) {
-        setenv("RENEF_DEVICE_ID", g_device_id.c_str(), 1);
-    }
-
-    if (device_connected) {
-        std::cout << "[*] Setting up ADB port forwarding...\n";
-        if (!setup_adb_forward(g_device_id)) {
-            std::cerr << "WARNING: Failed to setup port forwarding.\n";
+        if (!g_device_id.empty()) {
+            setenv("RENEF_DEVICE_ID", g_device_id.c_str(), 1);
         }
-        g_device_ready = true;
+
+        if (device_connected) {
+            std::cout << "[*] Setting up ADB port forwarding...\n";
+            if (!setup_adb_forward(g_device_id)) {
+                std::cerr << "WARNING: Failed to setup port forwarding.\n";
+            }
+            g_device_ready = true;
+        } else {
+            std::cout << "[*] No device connected. Some commands will not work until a device is connected.\n";
+        }
     } else {
-        std::cout << "[*] No device connected. Some commands will not work until a device is connected.\n";
+        // Local mode: device is always ready (we're on the device)
+        g_device_ready = true;
     }
 
     std::cout << "\nRENEF Interactive Shell\n";

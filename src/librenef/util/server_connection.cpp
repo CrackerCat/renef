@@ -1,5 +1,6 @@
 #include <renef/server_connection.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -26,6 +27,33 @@ bool ServerConnection::connect(const std::string& host, int port) {
         return true;
     }
 
+    // Check if host starts with @ -> abstract UDS
+    if (!host.empty() && host[0] == '@') {
+        sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock_fd < 0) {
+            std::cerr << "[ServerConnection] socket(AF_UNIX) failed\n";
+            return false;
+        }
+
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        addr.sun_path[0] = '\0';  // Abstract namespace
+        strncpy(addr.sun_path + 1, host.c_str() + 1, sizeof(addr.sun_path) - 2);
+        socklen_t addr_len = sizeof(addr.sun_family) + 1 + strlen(host.c_str() + 1);
+
+        if (::connect(sock_fd, (struct sockaddr*)&addr, addr_len) < 0) {
+            std::cerr << "[ServerConnection] connect(UDS) failed: " << strerror(errno) << "\n";
+            close(sock_fd);
+            sock_fd = -1;
+            return false;
+        }
+
+        std::cout << "[*] Connected to UDS: " << host << "\n";
+        return true;
+    }
+
+    // TCP connection
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0) {
         std::cerr << "[ServerConnection] socket() failed\n";
