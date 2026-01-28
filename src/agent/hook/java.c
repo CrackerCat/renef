@@ -511,6 +511,86 @@ void* create_java_hook_trampoline(int hook_index) {
 }
 
 
+// DecodeJObject - converts JNI reference to raw ART mirror::Object*
+typedef void* (*DecodeJObject_t)(void* thread, jobject obj);
+static DecodeJObject_t g_decode_jobject = NULL;
+static int g_decode_jobject_init_tried = 0;
+
+typedef struct {
+    void* functions;
+    void* self;
+    void* vm;
+} JNIEnvExt;
+
+static void init_decode_jobject(void) {
+    if (g_decode_jobject_init_tried) return;
+    g_decode_jobject_init_tried = 1;
+
+    const char* symbols[] = {
+        "_ZNK3art6Thread13DecodeJObjectEP8_jobject",
+        "_ZN3art6Thread13DecodeJObjectEP8_jobject",
+        NULL
+    };
+
+    void* handle = dlopen("libart.so", RTLD_NOW | RTLD_NOLOAD);
+    if (handle) {
+        for (int i = 0; symbols[i] && !g_decode_jobject; i++) {
+            g_decode_jobject = (DecodeJObject_t)dlsym(handle, symbols[i]);
+            if (g_decode_jobject) {
+                LOGI("Found DecodeJObject via dlsym: %s at %p", symbols[i], g_decode_jobject);
+                return;
+            }
+        }
+    }
+
+    for (int i = 0; symbols[i] && !g_decode_jobject; i++) {
+        g_decode_jobject = (DecodeJObject_t)dlsym(RTLD_DEFAULT, symbols[i]);
+        if (g_decode_jobject) {
+            LOGI("Found DecodeJObject via RTLD_DEFAULT: %s at %p", symbols[i], g_decode_jobject);
+            return;
+        }
+    }
+
+    if (!g_decode_jobject) {
+        LOGW("DecodeJObject not found - JNI ref to raw ptr conversion may fail");
+    }
+}
+
+// Convert JNI reference to raw ART object pointer
+static void* jni_ref_to_raw_ptr(JNIEnv* env, jobject ref) {
+    if (!ref) return NULL;
+
+    init_decode_jobject();
+
+    if (g_decode_jobject) {
+        JNIEnvExt* env_ext = (JNIEnvExt*)env;
+        void* thread = env_ext->self;
+
+        if (thread) {
+            void* raw_ptr = g_decode_jobject(thread, ref);
+            LOGI("jni_ref_to_raw_ptr: %p -> %p (via DecodeJObject)", ref, raw_ptr);
+            return raw_ptr;
+        }
+    }
+
+    // Fallback: try to decode stacked local ref directly
+    uintptr_t ref_val = (uintptr_t)ref;
+    if ((ref_val & 0x3) == 0x1) {  // Local ref kind
+        uintptr_t slot_addr = ref_val & ~((uintptr_t)0x3);
+        if (slot_addr > 0x10000) {
+            uint64_t slot_val = *(uint64_t*)slot_addr;
+            uint32_t lower32 = (uint32_t)(slot_val & 0xFFFFFFFF);
+            if (lower32 >= 0x01000000 && lower32 < 0x40000000) {
+                LOGI("jni_ref_to_raw_ptr: %p -> 0x%x (via stacked ref decode)", ref, lower32);
+                return (void*)(uintptr_t)lower32;
+            }
+        }
+    }
+
+    LOGW("jni_ref_to_raw_ptr: Cannot decode %p, returning as-is", ref);
+    return (void*)ref;
+}
+
 typedef jobject (*CreateLocalRef_t)(void* thread, void* obj);
 static CreateLocalRef_t g_create_local_ref = NULL;
 static int g_create_local_ref_init_tried = 0;
@@ -677,7 +757,6 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
     }
 
     JNIEnv* env = get_jni_env();
-    jobject receiver = (jobject)saved_regs[1];
 
     if (!env || !hook->method_id) {
         LOGE("call_original_via_jni: env=%p, method_id=%p (get_jni_env failed?)", env, hook->method_id);
@@ -686,8 +765,22 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
         return;
     }
 
-    LOGI("call_original_via_jni: %s.%s%s (env=%p, receiver=%p)",
-         hook->class_name, hook->method_name, hook->method_sig, env, receiver);
+    // saved_regs[1] is a raw ART object pointer from the trampoline, not a JNI reference
+    // We need to convert it to a JNI local reference for use with JNI calls
+    jobject receiver = NULL;
+    if (!hook->is_static && saved_regs[1]) {
+        receiver = raw_ptr_to_jni_ref(env, (void*)saved_regs[1]);
+        if (!receiver) {
+            LOGE("call_original_via_jni: failed to convert receiver to JNI ref");
+            hook->stored_return_value = 0;
+            hook->has_stored_return = true;
+            return;
+        }
+    }
+
+    LOGI("call_original_via_jni: %s.%s%s (env=%p, raw_receiver=0x%llx, jni_receiver=%p)",
+         hook->class_name, hook->method_name, hook->method_sig, env,
+         (unsigned long long)saved_regs[1], receiver);
 
     const ArtMethodOffsets* offsets = get_art_method_offsets();
     uint32_t* access_flags_ptr = (uint32_t*)((uintptr_t)hook->art_method + offsets->access_flags_offset);
@@ -741,18 +834,28 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
             case 'F': args[arg_idx].f = *(float*)&saved_regs[reg_idx]; break;
             case 'D': args[arg_idx].d = *(double*)&saved_regs[reg_idx]; break;
             case 'L':
-                args[arg_idx].l = (jobject)saved_regs[reg_idx];
+                // Convert raw pointer to JNI reference for object arguments
+                if (saved_regs[reg_idx]) {
+                    args[arg_idx].l = raw_ptr_to_jni_ref(env, (void*)saved_regs[reg_idx]);
+                } else {
+                    args[arg_idx].l = NULL;
+                }
                 while (*p && *p != ';') p++;
                 break;
             case '[':
-                args[arg_idx].l = (jobject)saved_regs[reg_idx];
+                // Convert raw pointer to JNI reference for array arguments
+                if (saved_regs[reg_idx]) {
+                    args[arg_idx].l = raw_ptr_to_jni_ref(env, (void*)saved_regs[reg_idx]);
+                } else {
+                    args[arg_idx].l = NULL;
+                }
                 p++;
                 if (*p == 'L') {
                     while (*p && *p != ';') p++;
                 }
                 break;
         }
-        LOGI("  arg[%d] = 0x%llx", arg_idx, (unsigned long long)saved_regs[reg_idx]);
+        LOGI("  arg[%d] = 0x%llx -> jni=%p", arg_idx, (unsigned long long)saved_regs[reg_idx], args[arg_idx].l);
         arg_idx++;
         reg_idx++;
         if (*p) p++;
@@ -806,6 +909,28 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
             case '[': {
                 jobject result = (*env)->CallStaticObjectMethodA(env, hook->clazz_global_ref, hook->method_id, args);
                 hook->stored_return_value = (uint64_t)result;
+
+                if (result && return_type == 'L') {
+                    const char* ret_sig = strchr(hook->method_sig, ')');
+                    if (ret_sig && strncmp(ret_sig + 1, "Ljava/lang/String;", 18) == 0) {
+                        if (hook->stored_string_value) {
+                            free(hook->stored_string_value);
+                            hook->stored_string_value = NULL;
+                        }
+
+                        jstring jstr = (jstring)result;
+                        const char* chars = (*env)->GetStringUTFChars(env, jstr, NULL);
+                        if (chars) {
+                            hook->stored_string_value = strdup(chars);
+                            hook->has_stored_string = true;
+                            LOGI("  Captured static string return value: \"%s\"", chars);
+                            (*env)->ReleaseStringUTFChars(env, jstr, chars);
+                        } else {
+                            hook->has_stored_string = false;
+                            LOGW("  Failed to read static string return value");
+                        }
+                    }
+                }
                 break;
             }
         }
@@ -847,6 +972,29 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
             case '[': {
                 jobject result = (*env)->CallObjectMethodA(env, receiver, hook->method_id, args);
                 hook->stored_return_value = (uint64_t)result;
+
+                // Check if return type is String and read the value
+                if (result && return_type == 'L') {
+                    const char* ret_sig = strchr(hook->method_sig, ')');
+                    if (ret_sig && strncmp(ret_sig + 1, "Ljava/lang/String;", 18) == 0) {
+                        if (hook->stored_string_value) {
+                            free(hook->stored_string_value);
+                            hook->stored_string_value = NULL;
+                        }
+
+                        jstring jstr = (jstring)result;
+                        const char* chars = (*env)->GetStringUTFChars(env, jstr, NULL);
+                        if (chars) {
+                            hook->stored_string_value = strdup(chars);
+                            hook->has_stored_string = true;
+                            LOGI("  Captured string return value: \"%s\"", chars);
+                            (*env)->ReleaseStringUTFChars(env, jstr, chars);
+                        } else {
+                            hook->has_stored_string = false;
+                            LOGW("  Failed to read string return value");
+                        }
+                    }
+                }
                 break;
             }
         }
@@ -1007,9 +1155,14 @@ static uint64_t java_hook_call_original(int hook_index, uint64_t* saved_regs) {
 
     JavaHookInfo* hook = &g_java_hooks[hook_index];
 
-    LOGI("java_hook_call_original: hook #%d, was_nativized=%d",
-         hook_index, hook->was_nativized);
+    LOGI("java_hook_call_original: hook #%d, was_nativized=%d, method_id=%p",
+         hook_index, hook->was_nativized, hook->method_id);
 
+    // Note: We cannot use JNI reflection (call_original_via_jni) from the trampoline context
+    // because saved_regs values are raw ART pointers/compressed OOPs, not JNI references.
+    // Converting them with raw_ptr_to_jni_ref fails because they're not valid mirror::Object*.
+    // We always use the interpreter bridge path which handles ART internals correctly.
+    // String capture is not supported in this path.
     const ArtMethodOffsets* offsets = get_art_method_offsets();
     uint32_t* access_flags_ptr = (uint32_t*)((uintptr_t)hook->art_method + offsets->access_flags_offset);
     void** entry_point_ptr = (void**)((uintptr_t)hook->art_method + offsets->entry_point_offset);
@@ -1040,6 +1193,92 @@ static uint64_t java_hook_call_original(int hook_index, uint64_t* saved_regs) {
     *entry_point_ptr = current_entry;
     __builtin___clear_cache((char*)access_flags_ptr, (char*)access_flags_ptr + 4);
     __builtin___clear_cache((char*)entry_point_ptr, (char*)entry_point_ptr + 8);
+
+    // Try to capture String return value
+    // The result from interpreter bridge is a raw ART mirror::String* pointer
+    // We read the string directly from memory using ART's internal layout
+    if (result != 0) {
+        const char* ret_sig = strchr(hook->method_sig, ')');
+        if (ret_sig && strncmp(ret_sig + 1, "Ljava/lang/String;", 18) == 0) {
+            // Free previous string if any
+            if (hook->stored_string_value) {
+                free(hook->stored_string_value);
+                hook->stored_string_value = NULL;
+                hook->has_stored_string = false;
+            }
+
+            // Read string directly from ART mirror::String layout
+            // Android 9+ (API 28+) uses String compression:
+            //   - If all chars are ASCII/Latin-1, stored as uint8_t[] (compressed)
+            //   - Otherwise stored as uint16_t[] (uncompressed)
+            // Layout:
+            //   offset 0x00: object header (4 bytes klass ref + 4 bytes monitor/hash)
+            //   offset 0x08: int32 count - high bit indicates compression
+            //                bit 31 = 0: compressed (Latin-1), bit 31 = 1: uncompressed (UTF-16)
+            //                bits 0-30: length
+            //   offset 0x0C: int32 hash (cached hash code)
+            //   offset 0x10: char data (uint8_t[] if compressed, uint16_t[] if not)
+
+            uint8_t* str_ptr = (uint8_t*)result;
+            LOGI("  Reading string from raw ptr: 0x%llx", (unsigned long long)result);
+
+            // Read count at offset 0x08
+            int32_t raw_count = *(int32_t*)(str_ptr + 0x08);
+
+            // Check compression bit (bit 31)
+            // Note: In some Android versions, 0 = uncompressed, in others 0 = compressed
+            // The safest way is to check if high bit is set
+            bool is_compressed = (raw_count >= 0);  // high bit not set = compressed
+            int32_t count = raw_count & 0x7FFFFFFF;  // mask out high bit to get length
+
+            LOGI("  String raw_count: 0x%x, count: %d, compressed: %d", raw_count, count, is_compressed);
+
+            if (count >= 0 && count < 65536) {  // Sanity check
+                char* utf8_str = malloc(count * 3 + 1);
+                if (utf8_str) {
+                    int utf8_idx = 0;
+
+                    if (is_compressed) {
+                        // Compressed: Latin-1 encoded (1 byte per char)
+                        uint8_t* latin1_chars = str_ptr + 0x10;
+                        for (int i = 0; i < count; i++) {
+                            uint8_t ch = latin1_chars[i];
+                            if (ch < 0x80) {
+                                utf8_str[utf8_idx++] = (char)ch;
+                            } else {
+                                // Latin-1 extended chars (0x80-0xFF) -> 2-byte UTF-8
+                                utf8_str[utf8_idx++] = 0xC0 | (ch >> 6);
+                                utf8_str[utf8_idx++] = 0x80 | (ch & 0x3F);
+                            }
+                        }
+                    } else {
+                        // Uncompressed: UTF-16 encoded (2 bytes per char)
+                        uint16_t* utf16_chars = (uint16_t*)(str_ptr + 0x10);
+                        for (int i = 0; i < count; i++) {
+                            uint16_t ch = utf16_chars[i];
+                            if (ch < 0x80) {
+                                utf8_str[utf8_idx++] = (char)ch;
+                            } else if (ch < 0x800) {
+                                utf8_str[utf8_idx++] = 0xC0 | (ch >> 6);
+                                utf8_str[utf8_idx++] = 0x80 | (ch & 0x3F);
+                            } else {
+                                utf8_str[utf8_idx++] = 0xE0 | (ch >> 12);
+                                utf8_str[utf8_idx++] = 0x80 | ((ch >> 6) & 0x3F);
+                                utf8_str[utf8_idx++] = 0x80 | (ch & 0x3F);
+                            }
+                        }
+                    }
+                    utf8_str[utf8_idx] = '\0';
+
+                    hook->stored_string_value = utf8_str;
+                    hook->has_stored_string = true;
+                    LOGI("  Captured string (raw read): \"%s\"", utf8_str);
+                }
+            } else {
+                LOGW("  Invalid string count: %d", count);
+            }
+        }
+    }
 
     return result;
 }
@@ -1120,12 +1359,30 @@ uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val) {
          g_hook_call_stack.depth);
     LOGI("  Return value: 0x%llx (%lld)", (unsigned long long)ret_val, (long long)ret_val);
 
+    // Log captured string value if available
+    if (hook->has_stored_string && hook->stored_string_value) {
+        LOGI("  String value: \"%s\"", hook->stored_string_value);
+    }
+
     if (hook->lua_onLeave_ref != LUA_NOREF && g_lua_engine) {
         pthread_mutex_lock(&g_java_lua_mutex);
         lua_State* L = lua_engine_get_state(g_lua_engine);
         if (L) {
             lua_rawgeti(L, LUA_REGISTRYINDEX, hook->lua_onLeave_ref);
+
+            lua_newtable(L);
+
             lua_pushinteger(L, ret_val);
+            lua_setfield(L, -2, "raw");
+
+            if (hook->has_stored_string && hook->stored_string_value) {
+                lua_pushstring(L, hook->stored_string_value);
+                lua_setfield(L, -2, "value");
+
+                free(hook->stored_string_value);
+                hook->stored_string_value = NULL;
+                hook->has_stored_string = false;
+            }
 
             if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
                 int api = get_android_api_level();
@@ -1143,10 +1400,27 @@ uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val) {
                         if (strcmp(jni_type, "string") == 0 && lua_isstring(L, -1)) {
                             if (can_modify_objects) {
                                 const char* str_value = lua_tostring(L, -1);
-                                if (g_current_jni_env && str_value) {
-                                    jstring new_str = (*g_current_jni_env)->NewStringUTF(g_current_jni_env, str_value);
-                                    ret_val = (uint64_t)new_str;
-                                    LOGI("  Modified to jstring: \"%s\"", str_value);
+                                JNIEnv* env = get_jni_env();
+                                if (env && str_value) {
+                                    jstring new_str = (*env)->NewStringUTF(env, str_value);
+                                    if (new_str) {
+                                        void* raw_ptr = jni_ref_to_raw_ptr(env, new_str);
+                                        if (raw_ptr) {
+                                            ret_val = (uint64_t)raw_ptr;
+                                            LOGI("  Modified to jstring: \"%s\" (jni_ref=%p, raw_ptr=%p)",
+                                                 str_value, new_str, raw_ptr);
+                                        } else {
+                                            LOGE("  Failed to convert jstring to raw ptr");
+                                        }
+                                    } else {
+                                        LOGE("  NewStringUTF failed for: \"%s\"", str_value);
+                                        if ((*env)->ExceptionCheck(env)) {
+                                            (*env)->ExceptionDescribe(env);
+                                            (*env)->ExceptionClear(env);
+                                        }
+                                    }
+                                } else {
+                                    LOGE("  Cannot create jstring: env=%p, str_value=%p", env, str_value);
                                 }
                             } else {
                                 LOGW("  Return value modification (string) not supported on API %d", api);

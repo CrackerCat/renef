@@ -48,6 +48,10 @@ typedef struct {
     // Stored return value from JNI reflection call
     uint64_t stored_return_value;
     bool has_stored_return;
+
+    // Stored string value for object return types (if applicable)
+    char* stored_string_value;
+    bool has_stored_string;
 } JavaHookInfo;
 
 extern JavaHookInfo g_java_hooks[MAX_JAVA_HOOKS];
