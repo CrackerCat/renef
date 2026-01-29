@@ -11,8 +11,7 @@
 #include <unistd.h>
 #include <vector>
 
-#define HIDDEN_PAYLOAD_PATH "/data/local/tmp/libagent.so"
-#define TEMP_PAYLOAD_PATH "/data/local/tmp/libagent.so"
+#define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
 struct SpawnParams {
   std::string pkg_name;
@@ -130,12 +129,12 @@ public:
       return CommandResult(false, "Failed to get PID");
     }
 
-    bool is_injected = inject(pid, HIDDEN_PAYLOAD_PATH);
+    bool is_injected = inject(pid, RENEF_PAYLOAD_PATH);
 
     char response[64];
     if (is_injected) {
       // Clean up temp payload file
-      unlink(TEMP_PAYLOAD_PATH);
+      unlink(RENEF_PAYLOAD_PATH);
 
       int con_pid = sock.ensure_connection(pid);
       std::string con_cmd = "con " + session_key + "\n";
@@ -166,3 +165,4 @@ public:
 std::unique_ptr<CommandDispatcher> create_spawn_command() {
   return std::make_unique<SpawnCommand>();
 }
+

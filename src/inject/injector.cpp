@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <vector>
 
+#define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
+
 #ifdef __linux__
 #include <elf.h>
 #include <sys/syscall.h>
@@ -131,9 +133,6 @@ static const char *resolve_lib_path(const char **paths) {
   }
   return nullptr;
 }
-
-#define HIDDEN_PAYLOAD_PATH "/data/local/tmp/libagent.so"
-#define TEMP_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
 static bool copy_file(const char *src, const char *dst) {
   int src_fd = open(src, O_RDONLY);
@@ -427,11 +426,11 @@ bool inject(int pid, const char *so_path) {
   char final_path[64];
   bool using_temp_file = false;
 
-  if (strcmp(so_path, TEMP_PAYLOAD_PATH) == 0) {
+  if (strcmp(so_path, RENEF_PAYLOAD_PATH) == 0) {
     strncpy(final_path, so_path, sizeof(final_path) - 1);
     std::cout << "  ✓ Using payload directly: " << so_path << "\n";
-  } else if (copy_file(so_path, TEMP_PAYLOAD_PATH)) {
-    strncpy(final_path, TEMP_PAYLOAD_PATH, sizeof(final_path) - 1);
+  } else if (copy_file(so_path, RENEF_PAYLOAD_PATH)) {
+    strncpy(final_path, RENEF_PAYLOAD_PATH, sizeof(final_path) - 1);
     using_temp_file = true;
     std::cout << "  ✓ Payload copied to temp path\n";
   } else {
@@ -491,7 +490,7 @@ bool inject(int pid, const char *so_path) {
         write_memory(pid, malloc_addr, malloc_backup);
         write_memory(pid, timezone_addr, timezone_backup);
         if (using_temp_file)
-          unlink(TEMP_PAYLOAD_PATH);
+          unlink(RENEF_PAYLOAD_PATH);
         return false;
       }
       continue;
@@ -511,7 +510,7 @@ bool inject(int pid, const char *so_path) {
       write_memory(pid, malloc_addr, malloc_backup);
       write_memory(pid, timezone_addr, timezone_backup);
       if (using_temp_file)
-        unlink(TEMP_PAYLOAD_PATH);
+        unlink(RENEF_PAYLOAD_PATH);
       return false;
     }
   }
@@ -523,7 +522,7 @@ bool inject(int pid, const char *so_path) {
   if (!write_memory(pid, new_map, stage2)) {
     std::cerr << "Failed to write stage2\n";
     if (using_temp_file)
-      unlink(TEMP_PAYLOAD_PATH);
+      unlink(RENEF_PAYLOAD_PATH);
     return false;
   }
   std::cout << "  ✓ Stage2 written to new map\n";
@@ -572,3 +571,4 @@ int main(int argc, char **argv) {
   }
 }
 #endif
+
