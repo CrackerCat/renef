@@ -133,8 +133,6 @@ public:
 
     char response[64];
     if (is_injected) {
-      // Clean up temp payload file
-      unlink(RENEF_PAYLOAD_PATH);
 
       int con_pid = sock.ensure_connection(pid);
       std::string con_cmd = "con " + session_key + "\n";

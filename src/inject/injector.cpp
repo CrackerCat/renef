@@ -489,8 +489,6 @@ bool inject(int pid, const char *so_path) {
         std::cerr << " Timeout waiting for malloc trigger\n";
         write_memory(pid, malloc_addr, malloc_backup);
         write_memory(pid, timezone_addr, timezone_backup);
-        if (using_temp_file)
-          unlink(RENEF_PAYLOAD_PATH);
         return false;
       }
       continue;
@@ -509,8 +507,6 @@ bool inject(int pid, const char *so_path) {
       std::cerr << " Timeout waiting for malloc trigger\n";
       write_memory(pid, malloc_addr, malloc_backup);
       write_memory(pid, timezone_addr, timezone_backup);
-      if (using_temp_file)
-        unlink(RENEF_PAYLOAD_PATH);
       return false;
     }
   }
@@ -521,8 +517,6 @@ bool inject(int pid, const char *so_path) {
 
   if (!write_memory(pid, new_map, stage2)) {
     std::cerr << "Failed to write stage2\n";
-    if (using_temp_file)
-      unlink(RENEF_PAYLOAD_PATH);
     return false;
   }
   std::cout << "  ✓ Stage2 written to new map\n";

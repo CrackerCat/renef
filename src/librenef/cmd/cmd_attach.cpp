@@ -104,8 +104,6 @@ public:
 
     bool is_injected = inject(params.pid, RENEF_PAYLOAD_PATH);
     if (is_injected) {
-      // Clean up temp payload file
-      unlink(RENEF_PAYLOAD_PATH);
 
       int con_pid = sock.ensure_connection(params.pid);
       std::string con_cmd = "con " + session_key + "\n";
