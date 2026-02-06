@@ -22,7 +22,7 @@ static int dl_find_callback(struct dl_phdr_info *info, size_t size, void *data) 
 
     if (info->dlpi_name && strstr(info->dlpi_name, find_data->lib_name)) {
         find_data->base_addr = (void*)info->dlpi_addr;
-        LOGI("Found %s at base: %p via dl_iterate_phdr (path: %s)",
+        verbose_log("Found %s at base: %p via dl_iterate_phdr (path: %s)",
              find_data->lib_name, find_data->base_addr, info->dlpi_name);
         return 1;
     }
@@ -31,7 +31,7 @@ static int dl_find_callback(struct dl_phdr_info *info, size_t size, void *data) 
 }
 
 void* find_library_base(const char* lib_name) {
-    LOGI("Searching for library: %s", lib_name);
+    verbose_log("Searching for library: %s", lib_name);
 
     struct dl_find_data find_data = {
         .lib_name = lib_name,
@@ -59,7 +59,7 @@ void* find_library_base(const char* lib_name) {
                 unsigned long addr;
                 if (sscanf(line, "%lx", &addr) == 1) {
                     base_addr = (void*)addr;
-                    LOGI("Found %s at base: %p (via /proc/self/maps)", lib_name, base_addr);
+                    verbose_log("Found %s at base: %p (via /proc/self/maps)", lib_name, base_addr);
                     break;
                 }
             }
@@ -315,7 +315,7 @@ static int dl_path_callback(struct dl_phdr_info *info, size_t size, void *data) 
 
     if (info->dlpi_name && strlen(info->dlpi_name) > 0 && strstr(info->dlpi_name, path_data->lib_name)) {
         path_data->path = strdup(info->dlpi_name);
-        LOGI("Found library path: %s via dl_iterate_phdr", path_data->path);
+        verbose_log("Found library path: %s via dl_iterate_phdr", path_data->path);
         return 1;
     }
 
@@ -323,7 +323,7 @@ static int dl_path_callback(struct dl_phdr_info *info, size_t size, void *data) 
 }
 
 char* find_library_path(const char* lib_name) {
-    LOGI("Searching for library path: %s", lib_name);
+    verbose_log("Searching for library path: %s", lib_name);
 
     struct dl_path_data path_data = {
         .lib_name = lib_name,
@@ -355,7 +355,7 @@ char* find_library_path(const char* lib_name) {
                 char* full_path = strchr(line, '/');
                 if (full_path) {
                     result = strdup(full_path);
-                    LOGI("Found library path: %s (via /proc/self/maps)", result);
+                    verbose_log("Found library path: %s (via /proc/self/maps)", result);
                     break;
                 }
             }
@@ -500,7 +500,7 @@ elf_exports_t* get_exports(const char* lib_name) {
         }
     }
 
-    LOGI("Found %zu exports in %s", result->count, lib_name);
+    verbose_log("Found %zu exports in %s", result->count, lib_name);
 
     if (needs_unmap) munmap(map, map_size);
     if (file_path) free(file_path);
@@ -625,7 +625,7 @@ elf_exports_t* get_symbols(const char* lib_name) {
         }
     }
 
-    LOGI("Found %zu symbols in %s (.symtab)", result->count, lib_name);
+    verbose_log("Found %zu symbols in %s (.symtab)", result->count, lib_name);
 
     munmap(map, st.st_size);
     free(file_path);

@@ -484,21 +484,21 @@ void hook_logger(uint64_t* saved_regs) {
         g_current_jni_env = (JNIEnv*)x0;
     }
 
-    LOGI("=== HOOK #%d: Function Called ===", g_current_hook_index);
-    LOGI("  x0-x3: 0x%llx 0x%llx 0x%llx 0x%llx",
+    verbose_log("=== HOOK #%d: Function Called ===", g_current_hook_index);
+    verbose_log("  x0-x3: 0x%llx 0x%llx 0x%llx 0x%llx",
          (unsigned long long)x0, (unsigned long long)x1,
          (unsigned long long)x2, (unsigned long long)x3);
 
-    LOGI("  [DEBUG] g_lua_engine=%p, hook_index=%d", g_lua_engine, g_current_hook_index);
+    verbose_log("  [DEBUG] g_lua_engine=%p, hook_index=%d", g_lua_engine, g_current_hook_index);
 
     if (g_current_hook_index >= 0 && g_lua_engine) {
         HookInfo* hook = &g_hooks[g_current_hook_index];
-        LOGI("  [DEBUG] onEnter_ref=%d (NOREF=%d)", hook->lua_onEnter_ref, LUA_NOREF);
+        verbose_log("  [DEBUG] onEnter_ref=%d (NOREF=%d)", hook->lua_onEnter_ref, LUA_NOREF);
 
         if (hook->lua_onEnter_ref != LUA_NOREF) {
             pthread_mutex_lock(&g_lua_mutex);
             lua_State* L = lua_engine_get_state(g_lua_engine);
-            LOGI("  [DEBUG] lua_State=%p", L);
+            verbose_log("  [DEBUG] lua_State=%p", L);
             if (L) {
                 lua_rawgeti(L, LUA_REGISTRYINDEX, hook->lua_onEnter_ref);
                 lua_newtable(L);
@@ -510,24 +510,24 @@ void hook_logger(uint64_t* saved_regs) {
                     lua_rawseti(L, -2, i);
                 }
 
-                LOGI("  [DEBUG] Calling lua_pcall...");
+                verbose_log("  [DEBUG] Calling lua_pcall...");
                 if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
                     LOGE("onEnter callback failed: %s", lua_tostring(L, -1));
                     lua_pop(L, 1);
                 } else {
-                    LOGI("  [DEBUG] lua_pcall succeeded");
+                    verbose_log("  [DEBUG] lua_pcall succeeded");
                 }
             }
             pthread_mutex_unlock(&g_lua_mutex);
         }
     } else {
-        LOGI("  [DEBUG] Skipped: engine=%p, index=%d", g_lua_engine, g_current_hook_index);
+        verbose_log("  [DEBUG] Skipped: engine=%p, index=%d", g_lua_engine, g_current_hook_index);
     }
 }
 
 uint64_t log_return_value(uint64_t ret_val) {
-    LOGI("=== HOOK: Function Returned ===");
-    LOGI("  x0 (return): 0x%llx (%lld)", (unsigned long long)ret_val, (long long)ret_val);
+    verbose_log("=== HOOK: Function Returned ===");
+    verbose_log("  x0 (return): 0x%llx (%lld)", (unsigned long long)ret_val, (long long)ret_val);
 
     if (g_current_hook_index >= 0 && g_lua_engine) {
         HookInfo* hook = &g_hooks[g_current_hook_index];
@@ -553,14 +553,14 @@ uint64_t log_return_value(uint64_t ret_val) {
                                 if (g_current_jni_env && str_value) {
                                     jstring new_str = (*g_current_jni_env)->NewStringUTF(g_current_jni_env, str_value);
                                     ret_val = (uint64_t)new_str;
-                                    LOGI("  Modified to jstring: \"%s\"", str_value);
+                                    verbose_log("  Modified to jstring: \"%s\"", str_value);
                                 }
                             } else if (strcmp(jni_type, "int") == 0 || strcmp(jni_type, "long") == 0) {
                                 ret_val = (uint64_t)lua_tointeger(L, -1);
-                                LOGI("  Modified to %s: %lld", jni_type, (long long)ret_val);
+                                verbose_log("  Modified to %s: %lld", jni_type, (long long)ret_val);
                             } else if (strcmp(jni_type, "boolean") == 0) {
                                 ret_val = lua_toboolean(L, -1) ? 1 : 0;
-                                LOGI("  Modified to boolean: %s", ret_val ? "true" : "false");
+                                verbose_log("  Modified to boolean: %s", ret_val ? "true" : "false");
                             }
                             lua_pop(L, 1);
                         } else {
@@ -568,7 +568,7 @@ uint64_t log_return_value(uint64_t ret_val) {
                         }
                     } else if (lua_isinteger(L, -1) || lua_isnumber(L, -1)) {
                         ret_val = (uint64_t)lua_tointeger(L, -1);
-                        LOGI("  Modified to: 0x%llx", (unsigned long long)ret_val);
+                        verbose_log("  Modified to: 0x%llx", (unsigned long long)ret_val);
                     }
                     lua_pop(L, 1);
                 } else {

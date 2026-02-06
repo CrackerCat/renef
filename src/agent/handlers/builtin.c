@@ -119,9 +119,34 @@ static int cmd_help(int fd, const char* args) {
     return 1;
 }
 
+static int cmd_verbose(int fd, const char* args) {
+    if (!args || !*args) {
+        char response[64];
+        snprintf(response, sizeof(response), "verbose: %s\n", g_verbose_mode ? "on" : "off");
+        write(fd, response, strlen(response));
+        return 1;
+    }
+
+    if (strcmp(args, "on") == 0 || strcmp(args, "1") == 0) {
+        g_verbose_mode = true;
+        const char* msg = "verbose: enabled\n";
+        write(fd, msg, strlen(msg));
+        LOGI("Verbose mode enabled");
+    } else if (strcmp(args, "off") == 0 || strcmp(args, "0") == 0) {
+        g_verbose_mode = false;
+        const char* msg = "verbose: disabled\n";
+        write(fd, msg, strlen(msg));
+        LOGI("Verbose mode disabled");
+    } else {
+        const char* err = "Usage: verbose [on|off]\n";
+        write(fd, err, strlen(err));
+    }
+    return 1;
+}
+
 void register_builtin_commands(void) {
     cmd_register("ping", cmd_ping);
-    cmd_register("la", cmd_list_apps); 
+    cmd_register("la", cmd_list_apps);
     cmd_register("hooks", cmd_hooks);
     cmd_register("unhook", cmd_unhook);
     cmd_register("hookn", cmd_hook);
@@ -130,4 +155,5 @@ void register_builtin_commands(void) {
     cmd_register("md", cmd_memdump);
     cmd_register("sec", cmd_sec);
     cmd_register("help", cmd_help);
+    cmd_register("verbose", cmd_verbose);
 }

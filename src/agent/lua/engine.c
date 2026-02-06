@@ -1,4 +1,5 @@
 #include <agent/lua_engine.h>
+#include <agent/globals.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -266,6 +267,8 @@ bool lua_engine_load_script(LuaEngine* engine, const char* script) {
         return false;
     }
 
+    verbose_log("Loading Lua script (%zu bytes)", strlen(script));
+
     int load_result = luaL_loadstring(engine->L, script);
     if (load_result != LUA_OK) {
         const char* error = lua_tostring(engine->L, -1);
@@ -273,6 +276,8 @@ bool lua_engine_load_script(LuaEngine* engine, const char* script) {
         lua_pop(engine->L, 1);
         return false;
     }
+
+    verbose_log("Script compiled successfully, executing...");
 
     int exec_result = lua_pcall(engine->L, 0, 0, 0);
     if (exec_result != LUA_OK) {
@@ -282,6 +287,7 @@ bool lua_engine_load_script(LuaEngine* engine, const char* script) {
         return false;
     }
 
+    verbose_log("Script executed successfully");
     return true;
 }
 
@@ -289,6 +295,8 @@ bool lua_engine_load_file(LuaEngine* engine, const char* filepath) {
     if (!engine || !engine->initialized || !filepath) {
         return false;
     }
+
+    verbose_log("Loading Lua file: %s", filepath);
 
     int load_result = luaL_loadfile(engine->L, filepath);
     if (load_result != LUA_OK) {
@@ -298,6 +306,8 @@ bool lua_engine_load_file(LuaEngine* engine, const char* filepath) {
         return false;
     }
 
+    verbose_log("File compiled successfully, executing...");
+
     int exec_result = lua_pcall(engine->L, 0, 0, 0);
     if (exec_result != LUA_OK) {
         const char* error = lua_tostring(engine->L, -1);
@@ -306,6 +316,7 @@ bool lua_engine_load_file(LuaEngine* engine, const char* filepath) {
         return false;
     }
 
+    verbose_log("File executed successfully: %s", filepath);
     return true;
 }
 

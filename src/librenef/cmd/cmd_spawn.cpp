@@ -50,6 +50,23 @@ static SpawnParams parse_spawn_params(const char *cmd_buffer, size_t cmd_size) {
     args = before_hook + after_hook;
   }
 
+  auto remove_flag = [&args](const std::string& flag) {
+    std::string space_flag = " " + flag;
+    size_t pos;
+    while ((pos = args.find(space_flag)) != std::string::npos) {
+      size_t end = pos + space_flag.length();
+
+      if (end >= args.length() || args[end] == ' ') {
+        while (end < args.length() && args[end] == ' ') end++;
+        args = args.substr(0, pos) + (end < args.length() ? " " + args.substr(end) : "");
+      } else {
+        break;
+      }
+    }
+  };
+  remove_flag("--verbose");
+  remove_flag("-v");
+
   size_t start = args.find_first_not_of(" \t");
   size_t end = args.find_last_not_of(" \t");
   if (start != std::string::npos && end != std::string::npos) {
