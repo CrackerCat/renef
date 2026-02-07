@@ -61,16 +61,16 @@ static int lua_hook(lua_State* L) {
     lua_getglobal(L, "__hook_type__");
     if (lua_isstring(L, -1)) {
         const char* hook_type_str = lua_tostring(L, -1);
-        LOGI("Global hook type detected: %s", hook_type_str);
+        verbose_log("Global hook type detected: %s", hook_type_str);
 
         if (strcmp(hook_type_str, "pltgot") == 0) {
             g_default_hook_type = HOOK_PLT_GOT;
-            LOGI("Hook type set to PLT/GOT");
+            verbose_log("Hook type set to PLT/GOT");
         } else if (strcmp(hook_type_str, "trampoline") == 0) {
             g_default_hook_type = HOOK_TRAMPOLINE;
-            LOGI("Hook type set to trampoline");
+            verbose_log("Hook type set to trampoline");
         } else {
-            LOGI("Unknown hook type '%s', using default", hook_type_str);
+            verbose_log("Unknown hook type '%s', using default", hook_type_str);
         }
     }
     lua_pop(L, 1);
@@ -116,13 +116,13 @@ static int lua_hook(lua_State* L) {
     }
 
     if (onEnter_ref != LUA_NOREF) {
-        LOGI("onEnter callback registered (ref: %d)", onEnter_ref);
+        verbose_log("onEnter callback registered (ref: %d)", onEnter_ref);
     }
     if (onLeave_ref != LUA_NOREF) {
-        LOGI("onLeave callback registered (ref: %d)", onLeave_ref);
+        verbose_log("onLeave callback registered (ref: %d)", onLeave_ref);
     }
 
-    LOGI("Hook target: type=%d, callbacks registered", target.type);
+    verbose_log("Hook target: type=%d, callbacks registered", target.type);
 
     if (target.type == NATIVE_METHOD) {
         bool result = install_lua_hook(target.info.native.lib_name,

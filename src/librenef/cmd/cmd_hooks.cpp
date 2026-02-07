@@ -109,10 +109,67 @@ public:
     }
 };
 
+class VerboseCommand : public CommandDispatcher {
+public:
+    std::string get_name() const override {
+        return "verbose";
+    }
+
+    std::string get_description() const override {
+        return "Toggle verbose mode: verbose [on|off]";
+    }
+
+    CommandResult dispatch(int client_fd, const char* cmd_buffer, size_t cmd_size) override {
+        int pid = CommandRegistry::instance().get_current_pid();
+
+        if (pid <= 0) {
+            const char* error_msg = "ERROR: No target PID set. Please attach/spawn first.\n";
+            write(client_fd, error_msg, strlen(error_msg));
+            return CommandResult(false, "No target PID set");
+        }
+
+        SocketHelper& socket_helper = CommandRegistry::instance().get_socket_helper();
+        int sock = socket_helper.ensure_connection(pid);
+
+        if (sock < 0) {
+            const char* error_msg = "ERROR: Failed to connect to agent\n";
+            write(client_fd, error_msg, strlen(error_msg));
+            return CommandResult(false, "Socket connection failed");
+        }
+
+        std::string cmd(cmd_buffer, cmd_size);
+        if (cmd.empty() || cmd.back() != '\n') {
+            cmd += "\n";
+        }
+        socket_helper.send_data(cmd.c_str(), cmd.size());
+
+        char buffer[256];
+        struct pollfd pfd = {sock, POLLIN, 0};
+        int ret = poll(&pfd, 1, 2000);
+
+        if (ret > 0 && (pfd.revents & POLLIN)) {
+            ssize_t n = ::recv(sock, buffer, sizeof(buffer) - 1, 0);
+            if (n > 0) {
+                buffer[n] = '\0';
+                write(client_fd, buffer, n);
+            }
+        } else {
+            const char* error = "ERROR: No response from agent\n";
+            write(client_fd, error, strlen(error));
+        }
+
+        return CommandResult(true, "Verbose mode toggled");
+    }
+};
+
 std::unique_ptr<CommandDispatcher> create_hooks_command() {
     return std::make_unique<HooksCommand>();
 }
 
 std::unique_ptr<CommandDispatcher> create_unhook_command() {
     return std::make_unique<UnhookCommand>();
+}
+
+std::unique_ptr<CommandDispatcher> create_verbose_command() {
+    return std::make_unique<VerboseCommand>();
 }

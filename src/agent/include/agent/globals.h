@@ -28,6 +28,10 @@ extern JavaVM* g_java_vm;
 
 extern int g_default_hook_type;
 
+extern bool g_verbose_mode;
+
+void verbose_log(const char* fmt, ...);
+
 JNIEnv* get_current_jni_env(void);
 JNIEnv* get_jni_env(void);
 

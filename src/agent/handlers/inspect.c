@@ -18,7 +18,7 @@ void handle_inspect_binary(int client_fd, const char* args) {
         return;
     }
 
-    LOGI("inspect_binary: lib=%s offset=0x%llx", lib_name, (unsigned long long)offset);
+    verbose_log("inspect_binary: lib=%s offset=0x%llx", lib_name, (unsigned long long)offset);
 
     void* base_addr = find_library_base(lib_name);
     if (!base_addr) {
@@ -28,7 +28,7 @@ void handle_inspect_binary(int client_fd, const char* args) {
     }
 
     void* target_func = (void*)((uintptr_t)base_addr + offset);
-    LOGI("Target function: %p", target_func);
+    verbose_log("Target function: %p", target_func);
 
     if (g_hook_count >= MAX_HOOKS) {
         const char* error = "ERROR: Maximum hooks reached\n";
@@ -52,5 +52,5 @@ void handle_inspect_binary(int client_fd, const char* args) {
              lib_name, (unsigned long long)offset, target_func, g_hook_count - 1);
     write(client_fd, response, strlen(response));
 
-    LOGI("Hook installed (total: %d)", g_hook_count);
+    verbose_log("Hook installed (total: %d)", g_hook_count);
 }

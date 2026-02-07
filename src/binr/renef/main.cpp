@@ -36,6 +36,7 @@ static bool g_gadget_mode = false;
 static int g_gadget_pid = 0;
 static std::string g_gadget_key;
 static std::unique_ptr<ITransport> g_gadget_transport;
+static bool g_verbose_mode = false;
 #define DEFAULT_TCP_PORT 1907
 #define DEFAULT_UDS_PATH "@com.android.internal.os.RuntimeInit"
 
@@ -695,6 +696,9 @@ int main(int argc, char *argv[]) {
             g_gadget_pid = std::stoi(argv[++i]);
             g_gadget_mode = true;
         }
+        else if (arg == "-v" || arg == "--verbose") {
+            g_verbose_mode = true;
+        }
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: " << argv[0] << " [options]\n";
             std::cout << "Options:\n";
@@ -705,6 +709,7 @@ int main(int argc, char *argv[]) {
             std::cout << "  -g, --gadget <pid>       Gadget mode: connect directly to injected agent (no server)\n";
             std::cout << "  --hook <type>            Hook type: trampoline (default) or pltgot\n";
             std::cout << "  --local                  Local mode: connect via UDS (for Termux/on-device)\n";
+            std::cout << "  -v, --verbose            Enable verbose mode (show agent debug logs)\n";
             std::cout << "  -h, --help               Show this help\n";
             std::cout << "\nExamples:\n";
             std::cout << "  " << argv[0] << " -s com.example.app -l script.lua\n";
@@ -867,6 +872,12 @@ int main(int argc, char *argv[]) {
                 registry.set_current_pid(pid);
                 auto_started = true;
                 std::cout << "[*] Process ready (PID: " << pid << ")\n";
+
+                // Enable verbose mode if requested
+                if (g_verbose_mode) {
+                    std::cout << "[*] Enabling verbose mode...\n";
+                    send_command("verbose on");
+                }
             }
         } else {
             std::cerr << "[ERROR] Failed to start process\n";
@@ -1194,6 +1205,7 @@ int main(int argc, char *argv[]) {
 
         if (is_spawn_or_attach && response.rfind("OK", 0) == 0) {
             int pid = 0;
+            bool enable_verbose = g_verbose_mode || (command.find("--verbose") != std::string::npos) || (command.find("-v") != std::string::npos);
 
             if (command.rfind("spawn ", 0) == 0) {
                 size_t space_pos = response.find(' ');
@@ -1220,6 +1232,10 @@ int main(int argc, char *argv[]) {
 
             if (pid > 0) {
                 registry.set_current_pid(pid);
+
+                if (enable_verbose) {
+                    send_command("verbose on");
+                }
             }
         }
         free(input);

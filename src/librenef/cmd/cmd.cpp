@@ -36,6 +36,7 @@ std::unique_ptr<CommandDispatcher> create_unhook_command();
 std::unique_ptr<CommandDispatcher> create_sec_command();
 std::unique_ptr<CommandDispatcher> create_memdump_command();
 std::unique_ptr<CommandDispatcher> create_hookgen_command();
+std::unique_ptr<CommandDispatcher> create_verbose_command();
 
 void CommandRegistry::register_command(std::unique_ptr<CommandDispatcher> cmd) {
     if (!cmd) {
@@ -137,6 +138,7 @@ void CommandRegistry::setup_all_commands() {
     register_command(create_sec_command());
     register_command(create_memdump_command());
     register_command(create_hookgen_command());
+    register_command(create_verbose_command());
 }
 
 bool CommandRegistry::is_command_exist(const std::string& name) {
