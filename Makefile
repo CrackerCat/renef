@@ -71,7 +71,12 @@ ifeq ($(BUILD_MODE),release)
     CMAKE_BUILD_TYPE := Release
     SERVER_OPT_FLAGS := -O3 -DNDEBUG
     PAYLOAD_OPT_FLAGS := -O3 -DNDEBUG
-    STRIP_CMD := strip
+    # Use strip -x on macOS to avoid TLS corruption issues, regular strip on Linux
+    ifeq ($(HOST_OS),macos)
+        STRIP_CMD := strip -x
+    else
+        STRIP_CMD := strip
+    endif
 else
     CMAKE_BUILD_TYPE := Debug
     SERVER_OPT_FLAGS := -O0 -g
@@ -241,12 +246,18 @@ $(CAPSTONE_HOST_LIB):
 	@cp -r $(CAPSTONE_SRC)/include/capstone external/capstone/include/
 	@echo "Capstone $(CAPSTONE_VERSION) built for host"
 
+# Note: The client binary is NOT stripped even in release mode because:
+# - CMake already optimizes the binary with -O3 in Release mode
+# - strip/strip -x on macOS can corrupt binaries with thread-local storage (TLS)
+# - Resulting in "Malformed Mach-o file" errors and SIGKILL (exit 137)
+# - The size difference is minimal for the benefit of stability
 client: $(ASIO_HEADER) $(CAPSTONE_HOST_LIB)
 	@echo "Building renef client for $(HOST_OS)/$(HOST_ARCH) ($(BUILD_MODE))..."
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && cmake -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) .. && cmake --build .
-	@if [ "$(BUILD_MODE)" = "release" ]; then \
-		$(STRIP_CMD) $(RENEF_CLIENT) 2>/dev/null || true; \
+	@if [ "$(HOST_OS)" = "macos" ]; then \
+		echo "Signing binary for macOS..."; \
+		codesign -s - -f $(RENEF_CLIENT) 2>/dev/null || true; \
 	fi
 	@echo "Built: $(RENEF_CLIENT)"
 
