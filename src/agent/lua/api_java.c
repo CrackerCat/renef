@@ -2,6 +2,8 @@
 #include <agent/lua_engine.h>
 #include <agent/globals.h>
 #include <agent/agent.h>
+#include <agent/bridge_dex.h>
+#include <agent/hook_java.h>
 
 #include <dlfcn.h>
 #include <string.h>
@@ -12,6 +14,21 @@
 
 #define MAX_PARAMS 16
 #define MAX_CLASS_NAME 256
+#define MAX_REGISTERED_METHODS 16
+
+typedef struct {
+    char method_name[64];
+    int lua_ref;
+} RegisteredMethod;
+
+typedef struct {
+    RegisteredMethod methods[MAX_REGISTERED_METHODS];
+    int method_count;
+    lua_State* L;
+} CallbackRegistry;
+
+static jclass    g_bridge_class = NULL;
+static jmethodID g_bridge_ctor  = NULL;
 
 typedef struct {
     jclass clazz;
@@ -213,6 +230,137 @@ static JavaClassWrapper* java_use(JNIEnv* env, const char* class_name) {
     return wrapper;
 }
 
+
+static jobject JNICALL native_invoke_callback(JNIEnv* env, jclass clazz,
+    jlong callbackPtr, jstring methodName, jstring returnType, jobjectArray args)
+{
+    CallbackRegistry* reg = (CallbackRegistry*)(uintptr_t)callbackPtr;
+    if (!reg || !reg->L) return NULL;
+
+    const char* name = (*env)->GetStringUTFChars(env, methodName, NULL);
+    if (!name) return NULL;
+
+    int lua_ref = LUA_NOREF;
+    for (int i = 0; i < reg->method_count; i++) {
+        if (strcmp(reg->methods[i].method_name, name) == 0) {
+            lua_ref = reg->methods[i].lua_ref;
+            break;
+        }
+    }
+
+    if (lua_ref == LUA_NOREF) {
+        (*env)->ReleaseStringUTFChars(env, methodName, name);
+        return NULL;
+    }
+
+    lua_State* L = reg->L;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, lua_ref);
+
+    int arg_count = 0;
+    if (args) {
+        arg_count = (*env)->GetArrayLength(env, args);
+        for (int i = 0; i < arg_count; i++) {
+            jobject arg = (*env)->GetObjectArrayElement(env, args, i);
+            if (!arg) {
+                lua_pushnil(L);
+            } else {
+                jclass string_class = (*env)->FindClass(env, "java/lang/String");
+                if ((*env)->IsInstanceOf(env, arg, string_class)) {
+                    const char* str = (*env)->GetStringUTFChars(env, (jstring)arg, NULL);
+                    lua_pushstring(L, str);
+                    (*env)->ReleaseStringUTFChars(env, (jstring)arg, str);
+                } else {
+                    lua_pushinteger(L, (lua_Integer)(uintptr_t)arg);
+                }
+                (*env)->DeleteLocalRef(env, arg);
+            }
+        }
+    }
+
+    jobject result = NULL;
+    if (lua_pcall(L, arg_count, 1, 0) != LUA_OK) {
+        LOGE("registerClass callback error [%s]: %s", name, lua_tostring(L, -1));
+        lua_pop(L, 1);
+    } else {
+        const char* ret_type = (*env)->GetStringUTFChars(env, returnType, NULL);
+
+        if (ret_type && strcmp(ret_type, "boolean") == 0) {
+            jclass bool_class = (*env)->FindClass(env, "java/lang/Boolean");
+            jmethodID value_of = (*env)->GetStaticMethodID(env, bool_class, "valueOf", "(Z)Ljava/lang/Boolean;");
+            jboolean val = lua_toboolean(L, -1);
+            result = (*env)->CallStaticObjectMethod(env, bool_class, value_of, val);
+        } else if (ret_type && strcmp(ret_type, "int") == 0) {
+            jclass int_class = (*env)->FindClass(env, "java/lang/Integer");
+            jmethodID value_of = (*env)->GetStaticMethodID(env, int_class, "valueOf", "(I)Ljava/lang/Integer;");
+            jint val = (jint)lua_tointeger(L, -1);
+            result = (*env)->CallStaticObjectMethod(env, int_class, value_of, val);
+        } else if (!lua_isnil(L, -1) && lua_isuserdata(L, -1)) {
+            jobject* obj_ud = (jobject*)lua_touserdata(L, -1);
+            result = *obj_ud;
+        }
+
+        if (ret_type) (*env)->ReleaseStringUTFChars(env, returnType, ret_type);
+        lua_pop(L, 1);
+    }
+
+    (*env)->ReleaseStringUTFChars(env, methodName, name);
+    return result;
+}
+
+static JNINativeMethod g_native_methods[] = {
+    { "nativeInvoke",
+      "(JLjava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;",
+      (void*)native_invoke_callback }
+};
+
+static int init_bridge_dex(JNIEnv* env) {
+    if (g_bridge_class) return 0;
+
+    jobject byte_buf = (*env)->NewDirectByteBuffer(env, (void*)bridge_dex, bridge_dex_len);
+    if (!byte_buf) {
+        LOGE("Failed to create ByteBuffer for bridge DEX");
+        return -1;
+    }
+
+    jclass loader_class = (*env)->FindClass(env, "dalvik/system/InMemoryDexClassLoader");
+    if (!loader_class) {
+        LOGE("Failed to find InMemoryDexClassLoader");
+        return -1;
+    }
+
+    jmethodID loader_ctor = (*env)->GetMethodID(env, loader_class, "<init>",
+        "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+    jobject loader = (*env)->NewObject(env, loader_class, loader_ctor, byte_buf, NULL);
+    if (!loader) {
+        LOGE("Failed to create InMemoryDexClassLoader");
+        return -1;
+    }
+
+    jmethodID load_class = (*env)->GetMethodID(env, loader_class, "loadClass",
+        "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring class_name = (*env)->NewStringUTF(env, "com.renef.lab.RenefInvocationHandler");
+    jclass bridge = (jclass)(*env)->CallObjectMethod(env, loader, load_class, class_name);
+    if (!bridge || (*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        LOGE("Failed to load RenefInvocationHandler");
+        return -1;
+    }
+
+    (*env)->RegisterNatives(env, bridge, g_native_methods, 1);
+
+    g_bridge_class = (*env)->NewGlobalRef(env, bridge);
+    g_bridge_ctor = (*env)->GetMethodID(env, g_bridge_class, "<init>", "(J)V");
+
+    (*env)->DeleteLocalRef(env, byte_buf);
+    (*env)->DeleteLocalRef(env, loader);
+    (*env)->DeleteLocalRef(env, bridge);
+    (*env)->DeleteLocalRef(env, class_name);
+
+    LOGI("Bridge DEX loaded, native method registered");
+    return 0;
+}
+
 //=============================================================================
 // $new() 
 //=============================================================================
@@ -303,12 +451,17 @@ static void lua_to_jvalue(JNIEnv* env, lua_State* L , ParsedSignature* sig, jval
         case 'Z':
             args[i].z = lua_toboolean(L, stack_pos);
             break;
+        case '[':
         case 'L':
-            if (lua_isstring(L,stack_pos)){
-                args[i].l = (*env)->NewStringUTF(env, lua_tostring(L,stack_pos));
-            }else{
+            if (lua_isnil(L, stack_pos)) {
+                args[i].l = NULL;
+            } else if (lua_isstring(L, stack_pos)) {
+                args[i].l = (*env)->NewStringUTF(env, lua_tostring(L, stack_pos));
+            } else if (lua_isuserdata(L, stack_pos)) {
                 jobject* obj_ud = (jobject*)lua_touserdata(L, stack_pos);
                 args[i].l = *obj_ud;
+            } else {
+                args[i].l = NULL;
             }
             break;
         case 'F':
@@ -391,9 +544,165 @@ static jvalue call_instance_method(JNIEnv* env, jobject instance,
 // Lua Bindings
 //=============================================================================
 
-// Userdata type name
 #define JAVA_WRAPPER_MT "JavaClassWrapper"
 #define JAVA_INSTANCE_MT "JavaInstance"
+
+static int lua_java_register_class(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+
+    JNIEnv* env = get_jni_env();
+    if (!env) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to get JNIEnv");
+        return 2;
+    }
+
+    if (init_bridge_dex(env) != 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to load bridge DEX");
+        return 2;
+    }
+
+    lua_getfield(L, 1, "implements");
+    if (!lua_istable(L, -1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "implements must be a table");
+        return 2;
+    }
+
+    int iface_count = luaL_len(L, -1);
+    jclass iface_classes[16];
+    for (int i = 0; i < iface_count && i < 16; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        const char* iface_name = lua_tostring(L, -1);
+        iface_classes[i] = find_class(env, iface_name);
+        if (!iface_classes[i]) {
+            lua_pushnil(L);
+            lua_pushfstring(L, "Interface not found: %s", iface_name);
+            return 2;
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+
+    CallbackRegistry* reg = (CallbackRegistry*)malloc(sizeof(CallbackRegistry));
+    memset(reg, 0, sizeof(CallbackRegistry));
+    reg->L = L;
+
+    lua_getfield(L, 1, "methods");
+    if (lua_istable(L, -1)) {
+        lua_pushnil(L);
+        while (lua_next(L, -2) != 0) {
+            if (lua_isstring(L, -2) && lua_isfunction(L, -1)) {
+                const char* mname = lua_tostring(L, -2);
+                int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+                strncpy(reg->methods[reg->method_count].method_name, mname, 63);
+                reg->methods[reg->method_count].lua_ref = ref;
+                reg->method_count++;
+            } else {
+                lua_pop(L, 1);
+            }
+        }
+    }
+    lua_pop(L, 1);
+
+    jlong ptr = (jlong)(uintptr_t)reg;
+    jobject handler = (*env)->NewObject(env, g_bridge_class, g_bridge_ctor, ptr);
+    if (!handler) {
+        LOGE("Failed to create RenefInvocationHandler");
+        free(reg);
+        lua_pushnil(L);
+        return 1;
+    }
+
+    jclass proxy_class = (*env)->FindClass(env, "java/lang/reflect/Proxy");
+    jmethodID new_proxy = (*env)->GetStaticMethodID(env, proxy_class, "newProxyInstance",
+        "(Ljava/lang/ClassLoader;[Ljava/lang/Class;Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;");
+
+    jclass class_class = (*env)->FindClass(env, "java/lang/Class");
+    jobjectArray iface_array = (*env)->NewObjectArray(env, iface_count, class_class, NULL);
+    for (int i = 0; i < iface_count; i++) {
+        (*env)->SetObjectArrayElement(env, iface_array, i, iface_classes[i]);
+    }
+
+    jobject class_loader = NULL;
+    if (g_class_loader) {
+        class_loader = g_class_loader;
+    } else {
+        setup_class_loader(env);
+        class_loader = g_class_loader;
+    }
+
+    jobject proxy = (*env)->CallStaticObjectMethod(env, proxy_class, new_proxy,
+        class_loader, iface_array, handler);
+
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        free(reg);
+        lua_pushnil(L);
+        lua_pushstring(L, "Proxy creation failed");
+        return 2;
+    }
+
+    jobject global_proxy = (*env)->NewGlobalRef(env, proxy);
+    (*env)->DeleteLocalRef(env, proxy);
+    (*env)->DeleteLocalRef(env, handler);
+    (*env)->DeleteLocalRef(env, iface_array);
+
+    jobject* ud = (jobject*)lua_newuserdata(L, sizeof(jobject));
+    *ud = global_proxy;
+    luaL_getmetatable(L, JAVA_INSTANCE_MT);
+    lua_setmetatable(L, -2);
+
+    LOGI("registerClass: proxy created with %d methods, %d interfaces", reg->method_count, iface_count);
+    return 1;
+}
+
+static int lua_java_array(lua_State* L) {
+    const char* class_name = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    JNIEnv* env = get_jni_env();
+    if (!env) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to get JNIEnv");
+        return 2;
+    }
+
+    jclass element_class = find_class(env, class_name);
+    if (!element_class) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "Class not found: %s", class_name);
+        return 2;
+    }
+
+    int len = luaL_len(L, 2);
+    jobjectArray arr = (*env)->NewObjectArray(env, len, element_class, NULL);
+    if (!arr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to create array");
+        return 2;
+    }
+
+    for (int i = 0; i < len; i++) {
+        lua_rawgeti(L, 2, i + 1);
+        if (lua_isuserdata(L, -1)) {
+            jobject* ud = (jobject*)lua_touserdata(L, -1);
+            (*env)->SetObjectArrayElement(env, arr, i, *ud);
+        }
+        lua_pop(L, 1);
+    }
+
+    jobject global = (*env)->NewGlobalRef(env, arr);
+    (*env)->DeleteLocalRef(env, arr);
+
+    jobject* result = (jobject*)lua_newuserdata(L, sizeof(jobject));
+    *result = global;
+    luaL_getmetatable(L, JAVA_INSTANCE_MT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
 
 // Java.use("com.example.Class") -> JavaClassWrapper userdata
 static int lua_java_use(lua_State* L) {
@@ -628,8 +937,32 @@ static const luaL_Reg java_wrapper_methods[] = {
     {NULL, NULL}
 };
 
+static int lua_java_instance_index(lua_State* L) {
+    const char* key = luaL_checkstring(L, 2);
+    if (strcmp(key, "raw") == 0) {
+        jobject* ud = (jobject*)lua_touserdata(L, 1);
+        if (*ud) {
+            JNIEnv* env = get_jni_env();
+            if (env) {
+                void* raw = jni_ref_to_raw_ptr(env, *ud);
+                lua_pushinteger(L, (lua_Integer)(uintptr_t)raw);
+            } else {
+                lua_pushinteger(L, (lua_Integer)(uintptr_t)*ud);
+            }
+        } else {
+            lua_pushinteger(L, 0);
+        }
+        return 1;
+    }
+    if (strcmp(key, "call") == 0) {
+        lua_pushcfunction(L, lua_java_call_instance);
+        return 1;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
 static const luaL_Reg java_instance_methods[] = {
-    {"call", lua_java_call_instance},
     {"__gc", lua_java_instance_gc},
     {NULL, NULL}
 };
@@ -642,7 +975,7 @@ void lua_register_java(lua_State* L) {
     lua_pop(L, 1);
 
     luaL_newmetatable(L, JAVA_INSTANCE_MT);
-    lua_pushvalue(L, -1);
+    lua_pushcfunction(L, lua_java_instance_index);
     lua_setfield(L, -2, "__index");
     luaL_setfuncs(L, java_instance_methods, 0);
     lua_pop(L, 1);
@@ -651,6 +984,12 @@ void lua_register_java(lua_State* L) {
 
     lua_pushcfunction(L, lua_java_use);
     lua_setfield(L, -2, "use");
+
+    lua_pushcfunction(L, lua_java_register_class);
+    lua_setfield(L, -2, "registerClass");
+
+    lua_pushcfunction(L, lua_java_array);
+    lua_setfield(L, -2, "array");
 
     lua_setglobal(L, "Java");
 

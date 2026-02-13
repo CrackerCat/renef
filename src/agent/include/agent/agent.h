@@ -9,6 +9,8 @@ extern "C" {
 
 JNIEnv* get_jni_env(void);
 
+void* elf_lookup_symbol(const char* lib_path, uintptr_t load_addr, const char* symbol_name);
+
 #ifdef __cplusplus
 }
 #endif
