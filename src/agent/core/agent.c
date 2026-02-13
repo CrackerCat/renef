@@ -26,6 +26,7 @@
 #include <elf.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <poll.h>
 
 #include <agent/globals.h>
 #include <agent/cmd_registry.h>
@@ -559,7 +560,12 @@ static void* command_handler(void* arg) {
                 cmd[buf_used] = '\0';
 
                 if (buf_used > 0 && cmd[buf_used - 1] == '\n') {
-                    complete = 1;
+                    // Check if more data follows (embedded newline in multi-line payload)
+                    struct pollfd pfd = {client_fd, POLLIN, 0};
+                    if (poll(&pfd, 1, 50) <= 0) {
+                        complete = 1;
+                    }
+                    // else: more data available, keep reading
                 }
             }
 

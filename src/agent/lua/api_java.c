@@ -94,10 +94,20 @@ static bool setup_class_loader(JNIEnv* env) {
 }
 
 static jclass find_class(JNIEnv* env, const char* class_name) {
-    jclass clazz = (*env)->FindClass(env, class_name);
+    // Convert dot notation to slash notation for JNI (e.g. "javax.net.ssl.SSLContext" -> "javax/net/ssl/SSLContext")
+    char jni_class_name[256];
+    strncpy(jni_class_name, class_name, sizeof(jni_class_name) - 1);
+    jni_class_name[sizeof(jni_class_name) - 1] = '\0';
+    for (size_t i = 0; jni_class_name[i] != '\0'; i++) {
+        if (jni_class_name[i] == '.') {
+            jni_class_name[i] = '/';
+        }
+    }
+
+    jclass clazz = (*env)->FindClass(env, jni_class_name);
     if (clazz) {
         (*env)->ExceptionClear(env);
-        LOGI("Found class via FindClass: %s", class_name);
+        LOGI("Found class via FindClass: %s", jni_class_name);
         return clazz;
     }
     (*env)->ExceptionClear(env);
@@ -107,8 +117,9 @@ static jclass find_class(JNIEnv* env, const char* class_name) {
         return NULL;
     }
 
+    // loadClass needs dot notation - convert back from slash to dot
     char java_class_name[256];
-    strncpy(java_class_name, class_name, sizeof(java_class_name) - 1);
+    strncpy(java_class_name, jni_class_name, sizeof(java_class_name) - 1);
     java_class_name[sizeof(java_class_name) - 1] = '\0';
 
     for (size_t i = 0; java_class_name[i] != '\0'; i++) {

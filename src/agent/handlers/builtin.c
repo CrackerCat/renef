@@ -144,6 +144,33 @@ static int cmd_verbose(int fd, const char* args) {
     return 1;
 }
 
+static int cmd_hexexec(int fd, const char* args) {
+    if (!args || !*args) {
+        const char* err = "ERROR: hexexec requires hex-encoded Lua code\n";
+        write(fd, err, strlen(err));
+        return 1;
+    }
+
+    size_t hex_len = strlen(args);
+    size_t lua_len = hex_len / 2;
+    char* lua_code = (char*)malloc(lua_len + 1);
+    if (!lua_code) {
+        const char* err = "ERROR: malloc failed\n";
+        write(fd, err, strlen(err));
+        return 1;
+    }
+
+    for (size_t i = 0; i < lua_len; i++) {
+        char byte[3] = {args[i * 2], args[i * 2 + 1], 0};
+        lua_code[i] = (char)strtol(byte, NULL, 16);
+    }
+    lua_code[lua_len] = '\0';
+
+    handle_eval(fd, lua_code);
+    free(lua_code);
+    return 1;
+}
+
 void register_builtin_commands(void) {
     cmd_register("ping", cmd_ping);
     cmd_register("la", cmd_list_apps);
@@ -151,6 +178,7 @@ void register_builtin_commands(void) {
     cmd_register("unhook", cmd_unhook);
     cmd_register("hookn", cmd_hook);
     cmd_register("exec", cmd_eval);
+    cmd_register("hexexec", cmd_hexexec);
     cmd_register("ms", cmd_memscan);
     cmd_register("md", cmd_memdump);
     cmd_register("sec", cmd_sec);

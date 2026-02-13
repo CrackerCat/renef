@@ -7,21 +7,32 @@
 #include <cstring>
 #include <string>
 #include <iostream>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
 
-static std::string get_lua_code(char* file_path) {
-    std::string lua_code;
-    FILE* file = fopen(file_path, "r");
-    if (!file) {
-        return "";
+static std::string read_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return "";
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0) { fclose(f); return ""; }
+    std::string content(size, '\0');
+    fread(&content[0], 1, size, f);
+    fclose(f);
+    return content;
+}
+
+static std::string hex_encode(const std::string& input) {
+    static const char hx[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(input.size() * 2);
+    for (unsigned char c : input) {
+        out.push_back(hx[c >> 4]);
+        out.push_back(hx[c & 0x0f]);
     }
-
-    char line[1024];
-    while (fgets(line, sizeof(line), file)) {
-        lua_code += line;
-    }
-
-    fclose(file);
-    return lua_code;
+    return out;
 }
 
 class LoadScriptCommand : public CommandDispatcher {
@@ -44,7 +55,7 @@ public:
 
         std::string file_path = cmd_parts[1];
 
-        std::string lua_script = get_lua_code((char*)file_path.c_str());
+        std::string lua_script = read_file(file_path.c_str());
         if (lua_script.empty()) {
             std::string error = "ERROR: Cannot read file: " + file_path + "\n";
             write(client_fd, error.c_str(), error.length());
@@ -66,24 +77,42 @@ public:
             return CommandResult(false, "Socket connection failed");
         }
 
-        std::string command = "exec " + lua_script + "\n";
+        std::string hex = hex_encode(lua_script);
+        std::string command = "hexexec " + hex + "\n";
         socket_helper.send_data(command.c_str(), command.length());
 
-        char buffer[4096];
-        ssize_t n = socket_helper.receive_data(buffer, sizeof(buffer));
+        int flags = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 
-        if (n > 0) {
-            write(client_fd, buffer, n);
-        } else if (n == 0) {
-            const char* msg = "ERROR: Agent disconnected\n";
-            write(client_fd, msg, strlen(msg));
-            return CommandResult(false, "Agent disconnected");
-        } else {
-            const char* msg = "ERROR: Failed to read from agent\n";
-            write(client_fd, msg, strlen(msg));
-            return CommandResult(false, "Failed to read from agent");
+        char buffer[4096];
+        bool script_done = false;
+        int timeout_count = 0;
+        const int max_timeout = 50;
+
+        while (!script_done && timeout_count < max_timeout) {
+            struct pollfd pfd = {sock, POLLIN, 0};
+            int ret = poll(&pfd, 1, 100);
+
+            if (ret > 0 && (pfd.revents & POLLIN)) {
+                ssize_t n = recv(sock, buffer, sizeof(buffer) - 1, 0);
+                if (n > 0) {
+                    buffer[n] = '\0';
+                    write(client_fd, buffer, n);
+                    if (strstr(buffer, "\342\234\223 Lua executed") || strstr(buffer, "\342\234\227 Lua")) {
+                        script_done = true;
+                    }
+                    timeout_count = 0;
+                } else if (n == 0) {
+                    break;
+                }
+            } else if (ret == 0) {
+                timeout_count++;
+            } else {
+                break;
+            }
         }
 
+        fcntl(sock, F_SETFL, flags);
         return CommandResult(true, "Script loaded and executed");
     }
 };
