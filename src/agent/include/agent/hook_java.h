@@ -52,6 +52,8 @@ typedef struct {
     // Stored string value for object return types (if applicable)
     char* stored_string_value;
     bool has_stored_string;
+
+    bool skip_original;
 } JavaHookInfo;
 
 extern JavaHookInfo g_java_hooks[MAX_JAVA_HOOKS];
@@ -83,6 +85,8 @@ void java_hook_on_enter(int hook_index, uint64_t* saved_regs);
 uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val);
 
 void* create_java_hook_trampoline(int hook_index);
+
+void* jni_ref_to_raw_ptr(JNIEnv* env, jobject ref);
 
 #ifdef __cplusplus
 }

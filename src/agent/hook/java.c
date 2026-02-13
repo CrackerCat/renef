@@ -1,5 +1,6 @@
 #include <agent/hook_java.h>
 #include <agent/globals.h>
+#include <agent/agent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -511,10 +512,10 @@ void* create_java_hook_trampoline(int hook_index) {
 }
 
 
-// DecodeJObject - converts JNI reference to raw ART mirror::Object*
 typedef void* (*DecodeJObject_t)(void* thread, jobject obj);
 static DecodeJObject_t g_decode_jobject = NULL;
 static int g_decode_jobject_init_tried = 0;
+static int g_decode_global_only = 0;
 
 typedef struct {
     void* functions;
@@ -526,28 +527,90 @@ static void init_decode_jobject(void) {
     if (g_decode_jobject_init_tried) return;
     g_decode_jobject_init_tried = 1;
 
-    const char* symbols[] = {
+    const char* general_symbols[] = {
         "_ZNK3art6Thread13DecodeJObjectEP8_jobject",
         "_ZN3art6Thread13DecodeJObjectEP8_jobject",
         NULL
     };
 
+    const char* global_symbols[] = {
+        "_ZNK3art6Thread19DecodeGlobalJObjectEP8_jobject",
+        NULL
+    };
+
     void* handle = dlopen("libart.so", RTLD_NOW | RTLD_NOLOAD);
+
     if (handle) {
-        for (int i = 0; symbols[i] && !g_decode_jobject; i++) {
-            g_decode_jobject = (DecodeJObject_t)dlsym(handle, symbols[i]);
+        for (int i = 0; general_symbols[i] && !g_decode_jobject; i++) {
+            g_decode_jobject = (DecodeJObject_t)dlsym(handle, general_symbols[i]);
             if (g_decode_jobject) {
-                LOGI("Found DecodeJObject via dlsym: %s at %p", symbols[i], g_decode_jobject);
+                LOGI("Found DecodeJObject: %s at %p", general_symbols[i], g_decode_jobject);
+                return;
+            }
+        }
+        for (int i = 0; global_symbols[i] && !g_decode_jobject; i++) {
+            g_decode_jobject = (DecodeJObject_t)dlsym(handle, global_symbols[i]);
+            if (g_decode_jobject) {
+                g_decode_global_only = 1;
+                LOGI("Found DecodeGlobalJObject: %s at %p", global_symbols[i], g_decode_jobject);
                 return;
             }
         }
     }
 
-    for (int i = 0; symbols[i] && !g_decode_jobject; i++) {
-        g_decode_jobject = (DecodeJObject_t)dlsym(RTLD_DEFAULT, symbols[i]);
+    for (int i = 0; general_symbols[i] && !g_decode_jobject; i++) {
+        g_decode_jobject = (DecodeJObject_t)dlsym(RTLD_DEFAULT, general_symbols[i]);
         if (g_decode_jobject) {
-            LOGI("Found DecodeJObject via RTLD_DEFAULT: %s at %p", symbols[i], g_decode_jobject);
+            LOGI("Found DecodeJObject via RTLD_DEFAULT: %s at %p", general_symbols[i], g_decode_jobject);
             return;
+        }
+    }
+    for (int i = 0; global_symbols[i] && !g_decode_jobject; i++) {
+        g_decode_jobject = (DecodeJObject_t)dlsym(RTLD_DEFAULT, global_symbols[i]);
+        if (g_decode_jobject) {
+            g_decode_global_only = 1;
+            LOGI("Found DecodeGlobalJObject via RTLD_DEFAULT: %s at %p", global_symbols[i], g_decode_jobject);
+            return;
+        }
+    }
+
+    FILE* fp = fopen("/proc/self/maps", "r");
+    if (fp) {
+        char line[512];
+        uintptr_t libart_base = 0;
+        char libart_path[256] = {0};
+
+        while (fgets(line, sizeof(line), fp)) {
+            if (strstr(line, "libart.so")) {
+                unsigned long start;
+                char path[256] = {0};
+                if (sscanf(line, "%lx-%*lx %*4s %*x %*s %*d %255s", &start, path) >= 1) {
+                    if (libart_base == 0 || start < libart_base) {
+                        libart_base = (uintptr_t)start;
+                        if (path[0]) strncpy(libart_path, path, sizeof(libart_path) - 1);
+                    }
+                }
+            }
+        }
+        fclose(fp);
+
+        if (libart_base && libart_path[0]) {
+            LOGI("DecodeJObject: trying ELF lookup in %s @ 0x%lx", libart_path, libart_base);
+            for (int i = 0; general_symbols[i] && !g_decode_jobject; i++) {
+                g_decode_jobject = (DecodeJObject_t)elf_lookup_symbol(libart_path, libart_base, general_symbols[i]);
+                if (g_decode_jobject) {
+                    LOGI("Found DecodeJObject via ELF: %s at %p", general_symbols[i], g_decode_jobject);
+                    return;
+                }
+            }
+            for (int i = 0; global_symbols[i] && !g_decode_jobject; i++) {
+                g_decode_jobject = (DecodeJObject_t)elf_lookup_symbol(libart_path, libart_base, global_symbols[i]);
+                if (g_decode_jobject) {
+                    g_decode_global_only = 1;
+                    LOGI("Found DecodeGlobalJObject via ELF: %s at %p", global_symbols[i], g_decode_jobject);
+                    return;
+                }
+            }
         }
     }
 
@@ -556,8 +619,7 @@ static void init_decode_jobject(void) {
     }
 }
 
-// Convert JNI reference to raw ART object pointer
-static void* jni_ref_to_raw_ptr(JNIEnv* env, jobject ref) {
+void* jni_ref_to_raw_ptr(JNIEnv* env, jobject ref) {
     if (!ref) return NULL;
 
     init_decode_jobject();
@@ -567,15 +629,23 @@ static void* jni_ref_to_raw_ptr(JNIEnv* env, jobject ref) {
         void* thread = env_ext->self;
 
         if (thread) {
-            void* raw_ptr = g_decode_jobject(thread, ref);
-            LOGI("jni_ref_to_raw_ptr: %p -> %p (via DecodeJObject)", ref, raw_ptr);
+            jobject decode_ref = ref;
+            jobject tmp_global = NULL;
+            if (g_decode_global_only) {
+                tmp_global = (*env)->NewGlobalRef(env, ref);
+                decode_ref = tmp_global;
+            }
+            void* raw_ptr = g_decode_jobject(thread, decode_ref);
+            if (tmp_global) {
+                (*env)->DeleteGlobalRef(env, tmp_global);
+            }
+            LOGI("jni_ref_to_raw_ptr: %p -> %p", ref, raw_ptr);
             return raw_ptr;
         }
     }
 
-    // Fallback: try to decode stacked local ref directly
     uintptr_t ref_val = (uintptr_t)ref;
-    if ((ref_val & 0x3) == 0x1) {  // Local ref kind
+    if ((ref_val & 0x3) == 0x1) {
         uintptr_t slot_addr = ref_val & ~((uintptr_t)0x3);
         if (slot_addr > 0x10000) {
             uint64_t slot_val = *(uint64_t*)slot_addr;
@@ -1133,6 +1203,14 @@ static void call_original_via_interpreter(JavaHookInfo* hook, uint64_t* saved_re
         g_in_original_call_mask &= ~hook_bit;
     }
 
+    {
+        JNIEnv* env = get_jni_env();
+        if (env && (*env)->ExceptionCheck(env)) {
+            LOGI("  Clearing pending Java exception (interpreter path)");
+            (*env)->ExceptionClear(env);
+        }
+    }
+
     LOGI("  Interpreter bridge returned: 0x%llx", (unsigned long long)result);
 
     *entry_point_ptr = current_entry;
@@ -1157,6 +1235,11 @@ static uint64_t java_hook_call_original(int hook_index, uint64_t* saved_regs) {
 
     LOGI("java_hook_call_original: hook #%d, was_nativized=%d, method_id=%p",
          hook_index, hook->was_nativized, hook->method_id);
+
+    if (hook->skip_original) {
+        LOGI("  Skipping original call (skip_original set by onEnter)");
+        return 0;
+    }
 
     // Note: We cannot use JNI reflection (call_original_via_jni) from the trampoline context
     // because saved_regs values are raw ART pointers/compressed OOPs, not JNI references.
@@ -1186,6 +1269,14 @@ static uint64_t java_hook_call_original(int hook_index, uint64_t* saved_regs) {
          current_entry, hook->original_entry_point);
 
     uint64_t result = call_interpreter_bridge_asm(hook->original_entry_point, saved_regs);
+
+    {
+        JNIEnv* env = get_jni_env();
+        if (env && (*env)->ExceptionCheck(env)) {
+            LOGI("  Clearing pending Java exception for hooked method");
+            (*env)->ExceptionClear(env);
+        }
+    }
 
     LOGI("  Original entry point returned: 0x%llx", (unsigned long long)result);
 
@@ -1315,6 +1406,8 @@ void java_hook_on_enter(int hook_index, uint64_t* saved_regs) {
          (unsigned long long)x0, (unsigned long long)x1,
          (unsigned long long)x2, (unsigned long long)x3);
 
+    hook->skip_original = false;
+
     if (hook->lua_onEnter_ref != LUA_NOREF && g_lua_engine) {
         pthread_mutex_lock(&g_java_lua_mutex);
         lua_State* L = lua_engine_get_state(g_lua_engine);
@@ -1337,10 +1430,39 @@ void java_hook_on_enter(int hook_index, uint64_t* saved_regs) {
                 lua_rawseti(L, -2, i);
             }
 
+            lua_pushvalue(L, -1);
+            int args_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
             if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
                 LOGE("Java hook onEnter callback failed: %s", lua_tostring(L, -1));
                 lua_pop(L, 1);
+            } else {
+                lua_rawgeti(L, LUA_REGISTRYINDEX, args_ref);
+
+                lua_getfield(L, -1, "skip");
+                if (lua_toboolean(L, -1)) {
+                    hook->skip_original = true;
+                    LOGI("  skip_original set by onEnter callback");
+                }
+                lua_pop(L, 1);
+
+                for (int i = 0; i < 8; i++) {
+                    lua_rawgeti(L, -1, i);
+                    if (lua_isinteger(L, -1)) {
+                        uint64_t new_val = (uint64_t)lua_tointeger(L, -1);
+                        if (new_val != saved_regs[i]) {
+                            LOGI("  Arg %d modified: 0x%llx -> 0x%llx", i,
+                                 (unsigned long long)saved_regs[i], (unsigned long long)new_val);
+                            saved_regs[i] = new_val;
+                        }
+                    }
+                    lua_pop(L, 1);
+                }
+
+                lua_pop(L, 1);
             }
+
+            luaL_unref(L, LUA_REGISTRYINDEX, args_ref);
         }
         pthread_mutex_unlock(&g_java_lua_mutex);
     }

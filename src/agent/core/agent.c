@@ -52,7 +52,7 @@ static int get_device_api_level(void) {
 }
 
 // ELF symbol lookup - find symbol in loaded library by parsing ELF
-static void* elf_lookup_symbol(const char* lib_path, uintptr_t load_addr, const char* symbol_name) {
+void* elf_lookup_symbol(const char* lib_path, uintptr_t load_addr, const char* symbol_name) {
     int fd = open(lib_path, O_RDONLY);
     if (fd < 0) {
         LOGE("Cannot open %s: %s", lib_path, strerror(errno));
