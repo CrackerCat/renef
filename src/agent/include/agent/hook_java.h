@@ -87,6 +87,7 @@ uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val);
 void* create_java_hook_trampoline(int hook_index);
 
 void* jni_ref_to_raw_ptr(JNIEnv* env, jobject ref);
+jobject raw_ptr_to_jni_ref(JNIEnv* env, void* raw_ptr);
 
 #ifdef __cplusplus
 }
