@@ -466,7 +466,13 @@ static void lua_to_jvalue(JNIEnv* env, lua_State* L , ParsedSignature* sig, jval
         case 'L':
             if (lua_isnil(L, stack_pos)) {
                 args[i].l = NULL;
-            } else if (lua_isstring(L, stack_pos)) {
+            } else if (lua_isinteger(L, stack_pos)) {
+                // Raw ART Object* from hook args (e.g. args[2] = x2 register)
+                // Must convert to JNI reference before passing to JNI calls
+                // NOTE: must check before lua_isstring, which returns true for integers in Lua 5.4
+                void* raw_ptr = (void*)(uintptr_t)lua_tointeger(L, stack_pos);
+                args[i].l = raw_ptr_to_jni_ref(env, raw_ptr);
+            } else if (lua_type(L, stack_pos) == LUA_TSTRING) {
                 args[i].l = (*env)->NewStringUTF(env, lua_tostring(L, stack_pos));
             } else if (lua_isuserdata(L, stack_pos)) {
                 jobject* obj_ud = (jobject*)lua_touserdata(L, stack_pos);

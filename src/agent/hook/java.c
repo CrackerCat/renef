@@ -661,45 +661,166 @@ void* jni_ref_to_raw_ptr(JNIEnv* env, jobject ref) {
     return (void*)ref;
 }
 
-typedef jobject (*CreateLocalRef_t)(void* thread, void* obj);
+// Resolve a dynamic symbol from the in-memory ELF image (no file I/O, SELinux-safe)
+static void* find_symbol_in_mapped_elf(uintptr_t base, const char* symbol_name) {
+    Elf64_Ehdr* ehdr = (Elf64_Ehdr*)base;
+    if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) {
+        LOGW("ELF(mem): bad magic at 0x%lx", (unsigned long)base);
+        return NULL;
+    }
+
+    Elf64_Phdr* phdr = (Elf64_Phdr*)(base + ehdr->e_phoff);
+
+    uintptr_t load_bias = 0;
+    for (int i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type == PT_LOAD) {
+            load_bias = base - phdr[i].p_vaddr;
+            break;
+        }
+    }
+
+    Elf64_Dyn* dynamic = NULL;
+    for (int i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type == PT_DYNAMIC) {
+            dynamic = (Elf64_Dyn*)(load_bias + phdr[i].p_vaddr);
+            break;
+        }
+    }
+    if (!dynamic) {
+        LOGW("ELF(mem): no PT_DYNAMIC");
+        return NULL;
+    }
+
+    uintptr_t dyn_bias = load_bias; // assume NOT relocated
+    for (Elf64_Dyn* d = dynamic; d->d_tag != DT_NULL; d++) {
+        if (d->d_tag == DT_SYMTAB || d->d_tag == DT_STRTAB) {
+            if (d->d_un.d_ptr >= base) {
+                dyn_bias = 0; // already absolute, don't add bias
+            }
+            break;
+        }
+    }
+    LOGI("ELF(mem): base=0x%lx load_bias=0x%lx dyn_bias=0x%lx",
+         (unsigned long)base, (unsigned long)load_bias, (unsigned long)dyn_bias);
+
+    Elf64_Sym* symtab = NULL;
+    const char* strtab = NULL;
+    uint32_t nchain = 0;
+
+    for (Elf64_Dyn* d = dynamic; d->d_tag != DT_NULL; d++) {
+        if (d->d_tag == DT_SYMTAB)
+            symtab = (Elf64_Sym*)(dyn_bias + d->d_un.d_ptr);
+        else if (d->d_tag == DT_STRTAB)
+            strtab = (const char*)(dyn_bias + d->d_un.d_ptr);
+        else if (d->d_tag == DT_HASH) {
+            uint32_t* h = (uint32_t*)(dyn_bias + d->d_un.d_ptr);
+            nchain = h[1];
+        }
+    }
+
+    if (!symtab || !strtab) {
+        LOGW("ELF(mem): symtab=%p strtab=%p - missing", symtab, strtab);
+        return NULL;
+    }
+
+    if (nchain == 0) {
+        uintptr_t sym_start = (uintptr_t)symtab;
+        uintptr_t str_start = (uintptr_t)strtab;
+        if (str_start > sym_start)
+            nchain = (str_start - sym_start) / sizeof(Elf64_Sym);
+        if (nchain == 0 || nchain > 100000)
+            nchain = 10000;
+    }
+
+    LOGI("ELF(mem): symtab=%p strtab=%p nchain=%u, searching for %s",
+         symtab, strtab, nchain, symbol_name);
+
+    for (uint32_t i = 0; i < nchain; i++) {
+        if (symtab[i].st_name && symtab[i].st_value) {
+            const char* name = strtab + symtab[i].st_name;
+            if (strcmp(name, symbol_name) == 0) {
+                void* result = (void*)(load_bias + symtab[i].st_value);
+                LOGI("ELF(mem): Found %s at %p (st_value=0x%lx + bias=0x%lx)",
+                     symbol_name, result,
+                     (unsigned long)symtab[i].st_value, (unsigned long)load_bias);
+                return result;
+            }
+        }
+    }
+    LOGW("ELF(mem): %s not found in %u symbols", symbol_name, nchain);
+    return NULL;
+}
+
+typedef jobject (*CreateLocalRef_t)(void* self, void* obj);
 static CreateLocalRef_t g_create_local_ref = NULL;
 static int g_create_local_ref_init_tried = 0;
+static int g_create_local_ref_is_env = 0;
+
+static const char* thread_symbols[] = {
+    "_ZN3art6Thread14NewLocalRefLRTEPNS_6mirror6ObjectE",
+    "_ZN3art6Thread16NewLocalRefLRTEEPNS_6mirror6ObjectE",
+    "_ZN3art6Thread15AddLocalRefLRTEPNS_6mirror6ObjectE",
+    "_ZN3art6Thread14CreateLocalRefEPNS_6mirror6ObjectE",
+    "_ZNK3art6Thread14CreateLocalRefEPNS_6mirror6ObjectE",
+    "_ZN3art6Thread13CreateJObjectEPNS_6mirror6ObjectE",
+    NULL
+};
+
+static const char* env_symbols[] = {
+    "_ZN3art9JNIEnvExt11NewLocalRefEPNS_6mirror6ObjectE",
+    "_ZN3art9JNIEnvExt17AddLocalReferenceINS_6mirror6ObjectEEEP8_jobjectNS_6ObjPtrIT_EE",
+    "_ZN3art9JNIEnvExt17AddLocalReferenceINS_6mirror6ObjectEEEP8_jobjectPT_",
+    NULL
+};
+
+static void try_resolve_symbols(const char** syms, int is_env, void* handle, const char* method) {
+    for (int i = 0; syms[i] && !g_create_local_ref; i++) {
+        CreateLocalRef_t fn = NULL;
+        if (handle) {
+            fn = (CreateLocalRef_t)dlsym(handle, syms[i]);
+        } else {
+            fn = (CreateLocalRef_t)dlsym(RTLD_DEFAULT, syms[i]);
+        }
+        if (fn) {
+            g_create_local_ref = fn;
+            g_create_local_ref_is_env = is_env;
+            LOGI("Found CreateLocalRef via %s: %s at %p (is_env=%d)",
+                 method, syms[i], fn, is_env);
+        }
+    }
+}
+
+static void try_resolve_elf(const char** syms, int is_env, const char* path, uintptr_t base) {
+    for (int i = 0; syms[i] && !g_create_local_ref; i++) {
+        CreateLocalRef_t fn = (CreateLocalRef_t)elf_find_symbol(path, base, syms[i]);
+        if (fn) {
+            g_create_local_ref = fn;
+            g_create_local_ref_is_env = is_env;
+            LOGI("Found CreateLocalRef via ELF: %s at %p (is_env=%d)", syms[i], fn, is_env);
+        }
+    }
+}
 
 static void init_create_local_ref(void) {
     if (g_create_local_ref_init_tried) return;
     g_create_local_ref_init_tried = 1;
 
-    const char* symbols[] = {
-        "_ZN3art6Thread14NewLocalRefLRTEPNS_6mirror6ObjectE",
-        "_ZN3art6Thread16NewLocalRefLRTEEPNS_6mirror6ObjectE",
-        "_ZN3art6Thread15AddLocalRefLRTEPNS_6mirror6ObjectE",
-        "_ZN3art6Thread14CreateLocalRefEPNS_6mirror6ObjectE",
-        "_ZNK3art6Thread14CreateLocalRefEPNS_6mirror6ObjectE",
-        "_ZN3art9JNIEnvExt17AddLocalReferenceINS_6mirror6ObjectEEEP8_jobjectNS_6ObjPtrIT_EE",
-        "_ZN3art9JNIEnvExt17AddLocalReferenceINS_6mirror6ObjectEEEP8_jobjectPT_",
-        "_ZN3art6Thread13CreateJObjectEPNS_6mirror6ObjectE",
-        NULL
-    };
-
+    // Try dlsym first (Thread symbols, then JNIEnvExt symbols)
     void* handle = dlopen("libart.so", RTLD_NOW | RTLD_NOLOAD);
     if (handle) {
-        for (int i = 0; symbols[i] && !g_create_local_ref; i++) {
-            g_create_local_ref = (CreateLocalRef_t)dlsym(handle, symbols[i]);
-            if (g_create_local_ref) {
-                LOGI("Found CreateLocalRef via dlsym: %s at %p", symbols[i], g_create_local_ref);
-                return;
-            }
-        }
+        try_resolve_symbols(thread_symbols, 0, handle, "dlsym");
+        if (!g_create_local_ref)
+            try_resolve_symbols(env_symbols, 1, handle, "dlsym");
+    }
+    if (!g_create_local_ref) {
+        try_resolve_symbols(thread_symbols, 0, NULL, "RTLD_DEFAULT");
+        if (!g_create_local_ref)
+            try_resolve_symbols(env_symbols, 1, NULL, "RTLD_DEFAULT");
     }
 
-    for (int i = 0; symbols[i] && !g_create_local_ref; i++) {
-        g_create_local_ref = (CreateLocalRef_t)dlsym(RTLD_DEFAULT, symbols[i]);
-        if (g_create_local_ref) {
-            LOGI("Found CreateLocalRef via RTLD_DEFAULT: %s at %p", symbols[i], g_create_local_ref);
-            return;
-        }
-    }
+    if (g_create_local_ref) return;
 
+    // Fall back to ELF parsing
     FILE* fp = fopen("/proc/self/maps", "r");
     if (!fp) {
         LOGE("CreateLocalRef: Cannot open /proc/self/maps");
@@ -731,31 +852,34 @@ static void init_create_local_ref(void) {
 
     LOGI("CreateLocalRef: libart.so at 0x%lx: %s", (unsigned long)libart_base, libart_path);
 
-    for (int i = 0; symbols[i] && !g_create_local_ref; i++) {
-        g_create_local_ref = (CreateLocalRef_t)elf_find_symbol(libart_path, libart_base, symbols[i]);
-        if (g_create_local_ref) {
-            LOGI("Found CreateLocalRef via ELF: %s at %p", symbols[i], g_create_local_ref);
-            return;
+    try_resolve_elf(thread_symbols, 0, libart_path, libart_base);
+    if (!g_create_local_ref)
+        try_resolve_elf(env_symbols, 1, libart_path, libart_base);
+
+    if (!g_create_local_ref && libart_base) {
+        LOGI("CreateLocalRef: trying in-memory ELF resolution at 0x%lx", (unsigned long)libart_base);
+        for (int i = 0; env_symbols[i] && !g_create_local_ref; i++) {
+            CreateLocalRef_t fn = (CreateLocalRef_t)find_symbol_in_mapped_elf(libart_base, env_symbols[i]);
+            if (fn) {
+                g_create_local_ref = fn;
+                g_create_local_ref_is_env = 1;
+                LOGI("Found CreateLocalRef via mapped ELF: %s at %p (is_env=1)", env_symbols[i], fn);
+            }
         }
-    }
-
-    if (!g_create_local_ref) {
-        char found_name[512] = {0};
-        const char* patterns[] = {"LocalRef", "AddLocal", "CreateLocal", NULL};
-
-        for (int i = 0; patterns[i] && !g_create_local_ref; i++) {
-            g_create_local_ref = (CreateLocalRef_t)elf_find_symbol_containing(
-                libart_path, libart_base, patterns[i], found_name, sizeof(found_name));
-            if (g_create_local_ref) {
-                LOGI("Found CreateLocalRef via pattern '%s': %s at %p",
-                     patterns[i], found_name, g_create_local_ref);
-                return;
+        if (!g_create_local_ref) {
+            for (int i = 0; thread_symbols[i] && !g_create_local_ref; i++) {
+                CreateLocalRef_t fn = (CreateLocalRef_t)find_symbol_in_mapped_elf(libart_base, thread_symbols[i]);
+                if (fn) {
+                    g_create_local_ref = fn;
+                    g_create_local_ref_is_env = 0;
+                    LOGI("Found CreateLocalRef via mapped ELF: %s at %p (is_env=0)", thread_symbols[i], fn);
+                }
             }
         }
     }
 
     if (!g_create_local_ref) {
-        LOGW("CreateLocalRef not found - will use direct IndirectRef table access");
+        LOGW("CreateLocalRef not found - raw_ptr_to_jni_ref will not work");
     }
 }
 
@@ -783,33 +907,31 @@ static void init_irt_add(const char* libart_path, uintptr_t libart_base) {
     }
 }
 
-static jobject raw_ptr_to_jni_ref(JNIEnv* env, void* raw_ptr) {
+jobject raw_ptr_to_jni_ref(JNIEnv* env, void* raw_ptr) {
     if (!raw_ptr) return NULL;
 
     init_create_local_ref();
 
     if (g_create_local_ref) {
-        void** env_ptr = (void**)env;
-        void* thread = env_ptr[1];  // self is at offset 8
+        void* self;
+        if (g_create_local_ref_is_env) {
+            // JNIEnvExt method: this = JNIEnv* (which IS JNIEnvExt*)
+            self = env;
+        } else {
+            // Thread method: this = Thread* (at JNIEnvExt offset 8)
+            void** env_ptr = (void**)env;
+            self = env_ptr[1];
+        }
 
-        if (thread) {
-            jobject ref = g_create_local_ref(thread, raw_ptr);
-            LOGI("raw_ptr_to_jni_ref: %p -> %p (via CreateLocalRef)", raw_ptr, ref);
+        if (self) {
+            jobject ref = g_create_local_ref(self, raw_ptr);
+            LOGI("raw_ptr_to_jni_ref: %p -> %p (via CreateLocalRef, is_env=%d)",
+                 raw_ptr, ref, g_create_local_ref_is_env);
             return ref;
         }
     }
 
-    int api = get_android_api_level();
-    if (api >= 29) {
-        uintptr_t ptr_val = (uintptr_t)raw_ptr;
-        if ((ptr_val & 0x3) == 0) {
-            jobject stacked_ref = (jobject)(ptr_val | 0x1);
-            LOGI("raw_ptr_to_jni_ref: %p -> %p (stacked ref attempt)", raw_ptr, stacked_ref);
-            return stacked_ref;
-        }
-    }
-
-    LOGW("raw_ptr_to_jni_ref: Cannot safely convert %p, CreateLocalRef unavailable", raw_ptr);
+    LOGW("raw_ptr_to_jni_ref: Cannot convert %p, CreateLocalRef unavailable", raw_ptr);
     return NULL;
 }
 

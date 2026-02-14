@@ -17,9 +17,6 @@ print(CYAN .. "=== Renef SSL Pinning Bypass ===" .. RESET)
 
 local bypass_count = 0
 
---------------------------------------------------------------
--- Helper: safe hook with error handling
---------------------------------------------------------------
 local function safe_hook(class, method, sig, callbacks, label)
     local ok, err = pcall(function()
         hook(class, method, sig, callbacks)
@@ -822,6 +819,41 @@ safe_hook(
 --------------------------------------------------------------
 print("\n[13] Appmattus Certificate Transparency...")
 
+-- 14a. Hook verifyCertificateTransparency on the base class.
+-- All Appmattus verifiers (TrustManager, HostnameVerifier, Interceptor) call this.
+-- Returning null (0) makes the Kotlin `is VerificationResult.Failure` check false,
+-- so the caller proceeds without throwing.
+safe_hook(
+    "com/appmattus/certificatetransparency/internal/verifier/CertificateTransparencyBase",
+    "verifyCertificateTransparency",
+    "(Ljava/lang/String;Ljava/util/List;)Lcom/appmattus/certificatetransparency/VerificationResult;",
+    {
+        onEnter = function(args)
+            args.skip = true
+        end,
+        onLeave = function(retval)
+            print("  [*] Appmattus CT verification bypassed (base)")
+            return 0
+        end
+    },
+    "Appmattus CT Base"
+)
+
+-- 14b. HostnameVerifier: direct boolean return as fallback
+safe_hook(
+    "com/appmattus/certificatetransparency/internal/verifier/CertificateTransparencyHostnameVerifier",
+    "verify",
+    "(Ljava/lang/String;Ljavax/net/ssl/SSLSession;)Z",
+    {
+        onLeave = function(retval)
+            print("  [*] Appmattus CT HostnameVerifier -> true")
+            return 1
+        end
+    },
+    "Appmattus CT HostnameVerifier"
+)
+
+-- 14c. TrustManager checkServerTrusted (void)
 safe_hook(
     "com/appmattus/certificatetransparency/internal/verifier/CertificateTransparencyTrustManager",
     "checkServerTrusted",
@@ -835,14 +867,32 @@ safe_hook(
     "Appmattus TrustManager (void)"
 )
 
+-- 14d. TrustManager checkServerTrusted (List-returning)
+local _ct_Arrays = nil
+do
+    local ok, arr = pcall(Java.use, "java/util/Arrays")
+    if ok then _ct_Arrays = arr end
+end
+
+local _ct_list = nil
 safe_hook(
     "com/appmattus/certificatetransparency/internal/verifier/CertificateTransparencyTrustManager",
     "checkServerTrusted",
     "([Ljava/security/cert/X509Certificate;Ljava/lang/String;Ljava/lang/String;)Ljava/util/List;",
     {
-        onLeave = function(retval)
+        onEnter = function(args)
+            if _ct_Arrays then
+                local ok, list = pcall(function()
+                    return _ct_Arrays:call("asList", "([Ljava/lang/Object;)Ljava/util/List;", args[2])
+                end)
+                if ok and list then _ct_list = list end
+            end
+            args.skip = true
             print("  [*] Appmattus CertificateTransparencyTrustManager (List) bypassed")
-            return retval.raw
+        end,
+        onLeave = function(retval)
+            if _ct_list then return _ct_list.raw end
+            return 0
         end
     },
     "Appmattus TrustManager (List)"
