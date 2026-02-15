@@ -10,6 +10,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <elf.h>
+#include <sys/mman.h>
 #include <sys/system_properties.h>
 
 #define TAG "JNI_API"
@@ -329,28 +330,105 @@ static int lua_jni_new_string_utf(lua_State* L) {
     return 1;
 }
 
+static bool is_addr_readable(uintptr_t addr, size_t len) {
+    if (addr == 0 || len == 0) return false;
+    uintptr_t page_mask = ~(uintptr_t)0xFFF;
+    uintptr_t start_page = addr & page_mask;
+    uintptr_t end_page = (addr + len - 1) & page_mask;
+    if (msync((void*)start_page, 4096, MS_ASYNC) != 0) return false;
+    if (end_page != start_page && msync((void*)end_page, 4096, MS_ASYNC) != 0) return false;
+    return true;
+}
+
+// ART String layout (Android 9+, ARM64):
+//   +0x00: uint32_t monitor_  (mark word)
+//   +0x04: uint32_t class_    (compressed HeapReference)
+//   +0x08: int32_t  count_    (length << 1 | compression_flag)
+//   +0x0C: uint32_t hash_code_
+//   +0x10: char     value_[]  (inline character data)
+// Compression: bit 0 of count_ = 0 means compressed (Latin-1), 1 means uncompressed (UTF-16)
+// Length = (uint32_t)count_ >> 1
+static int try_read_art_raw_string(lua_State* L, uintptr_t raw_ptr) {
+    uintptr_t ptr = raw_ptr & 0x00FFFFFFFFFFFFFFULL;
+
+    if (!is_addr_readable(ptr, 16)) return 0;
+
+    int32_t raw_count = *(int32_t*)(ptr + 0x08);
+    uint32_t length = (uint32_t)raw_count >> 1;
+    bool compressed = ((uint32_t)raw_count & 1) == 0;
+
+    if (length == 0 || length > 1048576) return 0;
+
+    uint8_t* data = (uint8_t*)(ptr + 0x10);
+    size_t data_size = compressed ? length : length * 2;
+
+    if (!is_addr_readable((uintptr_t)data, data_size)) return 0;
+
+    if (compressed) {
+        luaL_Buffer buf;
+        luaL_buffinit(L, &buf);
+        for (uint32_t i = 0; i < length; i++) {
+            uint8_t ch = data[i];
+            if (ch < 0x80) {
+                luaL_addchar(&buf, (char)ch);
+            } else {
+                luaL_addchar(&buf, (char)(0xC0 | (ch >> 6)));
+                luaL_addchar(&buf, (char)(0x80 | (ch & 0x3F)));
+            }
+        }
+        luaL_pushresult(&buf);
+    } else {
+        luaL_Buffer buf;
+        luaL_buffinit(L, &buf);
+        uint16_t* chars16 = (uint16_t*)data;
+        for (uint32_t i = 0; i < length; i++) {
+            uint16_t ch = chars16[i];
+            if (ch < 0x80) {
+                luaL_addchar(&buf, (char)ch);
+            } else if (ch < 0x800) {
+                luaL_addchar(&buf, (char)(0xC0 | (ch >> 6)));
+                luaL_addchar(&buf, (char)(0x80 | (ch & 0x3F)));
+            } else {
+                luaL_addchar(&buf, (char)(0xE0 | (ch >> 12)));
+                luaL_addchar(&buf, (char)(0x80 | ((ch >> 6) & 0x3F)));
+                luaL_addchar(&buf, (char)(0x80 | (ch & 0x3F)));
+            }
+        }
+        luaL_pushresult(&buf);
+    }
+    return 1;
+}
+
 static int lua_jni_get_string_utf(lua_State* L) {
     uintptr_t ref = (uintptr_t)luaL_checkinteger(L, 1);
+    if (ref == 0) { lua_pushnil(L); return 1; }
 
     JNIEnv* env = get_current_jni_env();
-    if (!env) {
-        return luaL_error(L, "JNIEnv not available");
-    }
+    if (!env) return luaL_error(L, "JNIEnv not available");
 
-    if (ref == 0) {
+    int kind = ref & 0x3;
+    if (kind != 0) {
+        jobject obj = (jobject)(uintptr_t)ref;
+        jobjectRefType ref_type = (*env)->GetObjectRefType(env, obj);
+        if (ref_type != JNIInvalidRefType) {
+            jstring jstr = (jstring)obj;
+            const char* chars = (*env)->GetStringUTFChars(env, jstr, NULL);
+            if (chars) {
+                lua_pushstring(L, chars);
+                (*env)->ReleaseStringUTFChars(env, jstr, chars);
+                return 1;
+            }
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        }
         lua_pushnil(L);
         return 1;
     }
 
-    jstring jstr = (jstring)ref;
-    const char* chars = (*env)->GetStringUTFChars(env, jstr, NULL);
-    if (!chars) {
-        return luaL_error(L, "Failed to get String content");
+    if (try_read_art_raw_string(L, ref)) {
+        return 1;
     }
 
-    lua_pushstring(L, chars);
-    (*env)->ReleaseStringUTFChars(env, jstr, chars);
-
+    lua_pushnil(L);
     return 1;
 }
 
@@ -371,21 +449,37 @@ static int lua_jni_delete_global_ref(lua_State* L) {
 
 static int lua_jni_get_string_length(lua_State* L) {
     uintptr_t ref = (uintptr_t)luaL_checkinteger(L, 1);
+    if (ref == 0) { lua_pushinteger(L, 0); return 1; }
 
     JNIEnv* env = get_current_jni_env();
-    if (!env) {
-        return luaL_error(L, "JNIEnv not available");
-    }
+    if (!env) return luaL_error(L, "JNIEnv not available");
 
-    if (ref == 0) {
+    int kind = ref & 0x3;
+    if (kind != 0) {
+        jobject obj = (jobject)(uintptr_t)ref;
+        jobjectRefType ref_type = (*env)->GetObjectRefType(env, obj);
+        if (ref_type != JNIInvalidRefType) {
+            jstring jstr = (jstring)obj;
+            jsize len = (*env)->GetStringLength(env, jstr);
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            else { lua_pushinteger(L, (lua_Integer)len); return 1; }
+        }
         lua_pushinteger(L, 0);
         return 1;
     }
 
-    jstring jstr = (jstring)ref;
-    jsize len = (*env)->GetStringLength(env, jstr);
+    // Raw ART String*: read count_ at offset 0x08
+    uintptr_t ptr = ref & 0x00FFFFFFFFFFFFFFULL;
+    if (is_addr_readable(ptr, 16)) {
+        int32_t raw_count = *(int32_t*)(ptr + 0x08);
+        uint32_t length = (uint32_t)raw_count >> 1;
+        if (length <= 1048576) {
+            lua_pushinteger(L, (lua_Integer)length);
+            return 1;
+        }
+    }
 
-    lua_pushinteger(L, (lua_Integer)len);
+    lua_pushinteger(L, 0);
     return 1;
 }
 
