@@ -104,7 +104,11 @@ bool ServerConnection::send(const std::string& data) {
 
     while (total < len) {
         ssize_t n = ::send(sock_fd, ptr + total, len - total, MSG_NOSIGNAL);
-        if (n <= 0) return false;
+        if (n <= 0) {
+            close(sock_fd);
+            sock_fd = -1;
+            return false;
+        }
         total += n;
     }
 
@@ -134,13 +138,21 @@ std::string ServerConnection::receive(int timeout_ms) {
             continue;
         }
 
-        if (n == 0) break;
+        if (n == 0) {
+            // Peer closed connection - mark as disconnected
+            close(sock_fd);
+            sock_fd = -1;
+            break;
+        }
 
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             if (poll(&pfd, 1, 50) <= 0) break;
             continue;
         }
 
+        // Real recv error - mark as disconnected
+        close(sock_fd);
+        sock_fd = -1;
         break;
     }
 

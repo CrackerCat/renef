@@ -121,6 +121,9 @@ public:
     bool is_injected = inject(params.pid, RENEF_PAYLOAD_PATH);
     if (is_injected) {
 
+      // Close old agent connection BEFORE establishing new one
+      CommandRegistry::instance().set_current_pid(params.pid);
+
       int con_pid = sock.ensure_connection(params.pid);
       std::string con_cmd = "con " + session_key + "\n";
       ssize_t con_payload =
@@ -137,8 +140,6 @@ public:
 
     const char *response = is_injected ? "OK\n" : "FAIL\n";
     write(client_fd, response, strlen(response));
-
-    CommandRegistry::instance().set_current_pid(params.pid);
 
     return CommandResult(is_injected, is_injected ? "Injection successful"
                                                   : "Injection failed");

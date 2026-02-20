@@ -151,6 +151,10 @@ public:
     char response[64];
     if (is_injected) {
 
+      // Close old agent connection BEFORE establishing new one
+      // (set_current_pid closes SocketHelper if PID changed)
+      CommandRegistry::instance().set_current_pid(pid);
+
       int con_pid = sock.ensure_connection(pid);
       std::string con_cmd = "con " + session_key + "\n";
       ssize_t con_payload =
@@ -169,8 +173,6 @@ public:
       snprintf(response, sizeof(response), "FAIL\n");
     }
     write(client_fd, response, strlen(response));
-
-    CommandRegistry::instance().set_current_pid(pid);
 
     return CommandResult(is_injected, is_injected ? "Injection successful"
                                                   : "Injection failed");

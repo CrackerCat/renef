@@ -50,6 +50,11 @@ int TCPTransport::create_server() {
 }
 
 int TCPTransport::accept_client() {
+    if (client_fd >= 0) {
+        ::close(client_fd);
+        client_fd = -1;
+    }
+
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
 

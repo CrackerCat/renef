@@ -64,6 +64,10 @@ int UDSTransport::create_server() {
 }
 
 int UDSTransport::accept_client() {
+    if (client_fd >= 0) {
+        ::close(client_fd);
+        client_fd = -1;
+    }
     client_fd = accept(server_fd, NULL, NULL);
     if (client_fd < 0) {
         std::cerr << "accept() failed: " << strerror(errno) << "\n";
