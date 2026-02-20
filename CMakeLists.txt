@@ -20,6 +20,19 @@ target_include_directories(capstone INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/include
 )
 
+# FTXUI TUI library (host-only)
+option(RENEF_BUILD_TUI "Build with FTXUI-based TUI support" ON)
+
+if(RENEF_BUILD_TUI)
+    include(FetchContent)
+    FetchContent_Declare(
+        ftxui
+        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
+        GIT_TAG v5.0.0
+    )
+    FetchContent_MakeAvailable(ftxui)
+endif()
+
 # Compiler warnings
 add_compile_options(-Wall -Wextra)
 
@@ -153,6 +166,27 @@ target_link_libraries(renef
         ${Readline_LIBRARY}
         ${CMAKE_DL_LIBS}
 )
+
+# TUI support (FTXUI)
+if(RENEF_BUILD_TUI)
+    target_sources(renef PRIVATE
+        src/binr/renef/tui/tui_app.cpp
+        src/binr/renef/tui/tui_state.cpp
+        src/binr/renef/tui/tui_status_bar.cpp
+        src/binr/renef/tui/command_adapter.cpp
+        src/binr/renef/tui/tabs/console_tab.cpp
+        src/binr/renef/tui/tabs/hooks_tab.cpp
+        src/binr/renef/tui/tabs/memory_tab.cpp
+        src/binr/renef/tui/tabs/modules_tab.cpp
+        src/binr/renef/tui/tabs/logs_tab.cpp
+    )
+    target_compile_definitions(renef PRIVATE RENEF_HAS_TUI)
+    target_link_libraries(renef PRIVATE
+        ftxui::screen
+        ftxui::dom
+        ftxui::component
+    )
+endif()
 
 # Export symbols for plugins to use (ren_exec, ren_print, etc.)
 set_target_properties(renef PROPERTIES ENABLE_EXPORTS ON)

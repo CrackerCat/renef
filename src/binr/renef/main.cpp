@@ -27,6 +27,9 @@
 #include <atomic>
 #include "tui/memscan_tui.h"
 #include <renef/plugin.h>
+#ifdef RENEF_HAS_TUI
+#include "tui/tui_app.h"
+#endif
 
 static std::vector<std::pair<std::string, std::string>> global_commands;
 static std::string g_device_id;
@@ -670,6 +673,7 @@ int main(int argc, char *argv[]) {
     std::string attach_pid;
     std::string spawn_app;
     std::string hook_type;
+    bool view_mode = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -696,6 +700,18 @@ int main(int argc, char *argv[]) {
             g_gadget_pid = std::stoi(argv[++i]);
             g_gadget_mode = true;
         }
+        else if ((arg == "-m" || arg == "--mode") && i + 1 < argc) {
+            std::string mode_val = argv[++i];
+            if (mode_val == "v" || mode_val == "view") {
+                view_mode = true;
+            }
+        }
+        else if (arg.rfind("-m=", 0) == 0 || arg.rfind("--mode=", 0) == 0) {
+            std::string mode_val = arg.substr(arg.find('=') + 1);
+            if (mode_val == "v" || mode_val == "view") {
+                view_mode = true;
+            }
+        }
         else if (arg == "-v" || arg == "--verbose") {
             g_verbose_mode = true;
         }
@@ -709,6 +725,7 @@ int main(int argc, char *argv[]) {
             std::cout << "  -g, --gadget <pid>       Gadget mode: connect directly to injected agent (no server)\n";
             std::cout << "  --hook <type>            Hook type: trampoline (default) or pltgot\n";
             std::cout << "  --local                  Local mode: connect via UDS (for Termux/on-device)\n";
+            std::cout << "  -m, --mode <mode>        Interface mode: v/view (TUI) [default: CLI]\n";
             std::cout << "  -v, --verbose            Enable verbose mode (show agent debug logs)\n";
             std::cout << "  -h, --help               Show this help\n";
             std::cout << "\nExamples:\n";
@@ -717,6 +734,7 @@ int main(int argc, char *argv[]) {
             std::cout << "  " << argv[0] << " -a 1234 --hook=pltgot -l hook.lua\n";
             std::cout << "  " << argv[0] << " --local -s com.example.app    # On-device usage\n";
             std::cout << "  " << argv[0] << " -g 12345 -l hook.lua          # Gadget mode (rootless)\n";
+            std::cout << "  " << argv[0] << " -m v -s com.example.app       # TUI mode\n";
             return 0;
         }else if(arg == "--local"){
             // Local mode: connect directly via UDS, skip ADB
@@ -904,6 +922,22 @@ int main(int argc, char *argv[]) {
         std::cout << "\n[*] Interactive shell ready\n";
         std::cout << "[*] You can run commands or enter Lua code\n\n";
     }
+
+#ifdef RENEF_HAS_TUI
+    if (view_mode) {
+        TuiApp app;
+        if (auto_started) {
+            ConnectionInfo info;
+            info.connected = true;
+            info.target_pid = registry.get_current_pid();
+            info.target_process = spawn_app.empty() ? attach_pid : spawn_app;
+            info.device_id = g_device_id;
+            info.mode = g_local_mode ? "UDS" : (g_gadget_mode ? "Gadget" : "TCP");
+            app.set_initial_state(info);
+        }
+        return app.run();
+    }
+#endif
 
     rl_bind_key('\t', custom_tab_handler);
 
