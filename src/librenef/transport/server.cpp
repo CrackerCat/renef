@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
+#include <poll.h>
 
 TransportServer::TransportServer(ITransport* transport)
     : transport(transport) {
@@ -53,7 +54,11 @@ void TransportServer::handle_client() {
             total += n;
 
             if (chunk[n-1] == '\n') {
-                break;
+                int fd = transport->get_fd();
+                struct pollfd pfd = {fd, POLLIN, 0};
+                if (poll(&pfd, 1, 50) <= 0) {
+                    break;
+                }
             }
 
             if (total > 1024 * 1024) {

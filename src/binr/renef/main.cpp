@@ -1115,8 +1115,7 @@ int main(int argc, char *argv[]) {
         if (lua_code.empty()) {
             std::cerr << "[ERROR] Cannot read file: " << script_file << "\n";
         } else {
-            std::string hex = hex_encode(lua_code);
-            std::string eval_cmd = "hexexec " + hex;
+            std::string eval_cmd = "exec " + lua_code;
             std::string response = send_command(eval_cmd);
 
             if (!response.empty()) {

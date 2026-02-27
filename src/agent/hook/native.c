@@ -510,13 +510,33 @@ void hook_logger(uint64_t* saved_regs) {
                     lua_rawseti(L, -2, i);
                 }
 
+                lua_pushvalue(L, -1);
+                int args_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
                 verbose_log("  [DEBUG] Calling lua_pcall...");
                 if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
                     LOGE("onEnter callback failed: %s", lua_tostring(L, -1));
                     lua_pop(L, 1);
                 } else {
                     verbose_log("  [DEBUG] lua_pcall succeeded");
+
+                    lua_rawgeti(L, LUA_REGISTRYINDEX, args_ref);
+                    for (int i = 0; i < 8; i++) {
+                        lua_rawgeti(L, -1, i);
+                        if (lua_isinteger(L, -1)) {
+                            uint64_t new_val = (uint64_t)lua_tointeger(L, -1);
+                            if (new_val != saved_regs[i]) {
+                                verbose_log("  Arg %d modified: 0x%llx -> 0x%llx", i,
+                                    (unsigned long long)saved_regs[i], (unsigned long long)new_val);
+                                saved_regs[i] = new_val;
+                            }
+                        }
+                        lua_pop(L, 1);
+                    }
+                    lua_pop(L, 1);
                 }
+
+                luaL_unref(L, LUA_REGISTRYINDEX, args_ref);
             }
             pthread_mutex_unlock(&g_lua_mutex);
         }
