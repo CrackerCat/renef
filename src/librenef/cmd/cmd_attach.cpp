@@ -89,7 +89,16 @@ static AttachParams parse_attach_params(const char *cmd_buffer,
     try {
       params.pid = std::stoi(pid_str);
     } catch (...) {
-      params.pid = -1;
+      char cmd[512];
+      snprintf(cmd, sizeof(cmd), "pidof -s %s", pid_str.c_str());
+      FILE *pipe = popen(cmd, "r");
+      if (pipe) {
+        int resolved_pid = 0;
+        if (fscanf(pipe, "%d", &resolved_pid) == 1) {
+          params.pid = resolved_pid;
+        }
+        pclose(pipe);
+      }
     }
   }
 

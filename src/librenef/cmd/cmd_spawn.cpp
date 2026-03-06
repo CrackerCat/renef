@@ -10,6 +10,7 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include <chrono>
 
 #define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
@@ -95,6 +96,8 @@ public:
     std::cerr << "  Raw command: '" << std::string(cmd_buffer, cmd_size) << "'"
               << std::endl;
 
+    auto spawn_start = std::chrono::steady_clock::now();
+
     std::string session_key = generate_auth_key();
     SocketHelper &sock = CommandRegistry::instance().get_socket_helper();
 
@@ -116,6 +119,10 @@ public:
     snprintf(launch_cmd, sizeof(launch_cmd), "monkey -p %s 1",
              params.pkg_name.c_str());
     int ret = system(launch_cmd);
+    auto after_launch = std::chrono::steady_clock::now();
+    std::cerr << "  [timing] launch: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(after_launch - spawn_start).count()
+              << "ms" << std::endl;
     if (ret != 0) {
       const char *error_msg = "ERROR: Failed to launch app\n";
       write(client_fd, error_msg, strlen(error_msg));
@@ -127,17 +134,17 @@ public:
              params.pkg_name.c_str());
 
     int pid = 0;
-    const int max_retries = 10;
-    const int retry_delay_us = 500000;
+    const int max_retries = 100;
+    const int retry_delay_us = 30000; // 30ms
 
     for (int i = 0; i < max_retries && pid <= 0; i++) {
-      usleep(retry_delay_us);
-
       FILE *pipe = popen(get_pid_cmd, "r");
       if (pipe) {
         fscanf(pipe, "%d", &pid);
         pclose(pipe);
       }
+      if (pid > 0) break;
+      usleep(retry_delay_us);
     }
 
     if (pid <= 0) {
@@ -145,6 +152,11 @@ public:
       write(client_fd, error_msg, strlen(error_msg));
       return CommandResult(false, "Failed to get PID");
     }
+
+    auto after_pid = std::chrono::steady_clock::now();
+    std::cerr << "  [timing] pid found: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(after_pid - spawn_start).count()
+              << "ms (pid=" << pid << ")" << std::endl;
 
     bool is_injected = inject(pid, RENEF_PAYLOAD_PATH);
 
@@ -172,6 +184,12 @@ public:
     } else {
       snprintf(response, sizeof(response), "FAIL\n");
     }
+
+    auto spawn_end = std::chrono::steady_clock::now();
+    std::cerr << "  [timing] total: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(spawn_end - spawn_start).count()
+              << "ms" << std::endl;
+
     write(client_fd, response, strlen(response));
 
     return CommandResult(is_injected, is_injected ? "Injection successful"

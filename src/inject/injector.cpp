@@ -477,11 +477,11 @@ bool inject(int pid, const char *so_path) {
   snprintf(kill_cmd, sizeof(kill_cmd), "kill -10 %d 2>/dev/null",
            pid); // SIGUSR1 → GC
   system(kill_cmd);
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
   std::cout << "  → Trigger signals sent\n";
 
   while (true) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
     auto data = read_memory(pid, timezone_addr, 8);
     if (data.size() != 8) {
       timeout_counter++;
@@ -527,7 +527,7 @@ bool inject(int pid, const char *so_path) {
     return false;
   }
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
   if (!write_memory(pid, malloc_addr, malloc_backup)) {
     std::cerr << "Warning: Failed to restore malloc\n";

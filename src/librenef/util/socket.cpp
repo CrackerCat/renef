@@ -28,7 +28,7 @@ int SocketHelper::ensure_connection(int pid) {
     snprintf(target, sizeof(target), "%d", pid);
 
     int max_retries = 10;
-    int retry_delay_ms = 100;
+    int retry_delay_ms = 20;
 
     for (int i = 0; i < max_retries; i++) {
         int fd = transport->connect_to_server(std::string(target));
