@@ -239,4 +239,111 @@ arm64_stage2_dlopen_linjector(uint64_t dlopen_addr, const char *lib_path,
   return sc;
 }
 
+// Single-stage shellcode for Android 9 and below.
+// Calls dlopen directly from libc (malloc) address space to avoid
+// namespace lookup failure when calling from anonymous mmap'd memory.
+// Layout (236 bytes):
+//   0-23:    Spin lock (atomic CAS on timezone variable)
+//   24-91:   Save all registers (sub sp + 16x stp)
+//   92-95:   mov x19, x6 (preserve timezone_addr across dlopen call)
+//   96-99:   adr x0, lib_path
+//   100-103: mov x1, #2 (RTLD_NOW)
+//   104-107: ldr x8, =dlopen_addr
+//   108-111: blr x8 (call dlopen from libc address space)
+//   112-115: orr x0, x0, #1 (set done flag)
+//   116-119: str x0, [x19] (signal via timezone)
+//   120-183: Restore all registers (16x ldp)
+//   184-187: add sp, sp, #256
+//   188-191: b byte_0 (jump back to spin - timezone is non-zero so thread spins)
+//   192-219: "/data/local/tmp/libagent.so\0" (28 bytes)
+//   220-227: dlopen_addr (patched)
+//   228-235: timezone_addr (patched)
+inline std::vector<uint8_t> arm64_stage1_direct_dlopen(uint64_t var_addr,
+                                                        uint64_t dlopen_addr) {
+  std::vector<uint8_t> sc = {
+      // Spin lock: atomic CAS on timezone variable
+      0x26, 0x07, 0x00, 0x58, // ldr x6, =timezone_addr (byte 228)
+      0xc1, 0x7c, 0x5f, 0x08, // ldxrb w1, [x6]
+      0xc1, 0xff, 0xff, 0x35, // cbnz w1, byte_0
+      0x22, 0x00, 0x80, 0x52, // mov w2, #1
+      0xc2, 0x7c, 0x01, 0x08, // stxrb w1, w2, [x6]
+      0x61, 0xff, 0xff, 0x35, // cbnz w1, byte_0
+
+      // Save all registers
+      0xff, 0x03, 0x04, 0xd1, // sub sp, sp, #256
+      0xe0, 0x07, 0x00, 0xa9, // stp x0, x1, [sp, #0]
+      0xe2, 0x0f, 0x01, 0xa9, // stp x2, x3, [sp, #16]
+      0xe4, 0x17, 0x02, 0xa9, // stp x4, x5, [sp, #32]
+      0xe6, 0x1f, 0x03, 0xa9, // stp x6, x7, [sp, #48]
+      0xe8, 0x27, 0x04, 0xa9, // stp x8, x9, [sp, #64]
+      0xea, 0x2f, 0x05, 0xa9, // stp x10, x11, [sp, #80]
+      0xec, 0x37, 0x06, 0xa9, // stp x12, x13, [sp, #96]
+      0xee, 0x3f, 0x07, 0xa9, // stp x14, x15, [sp, #112]
+      0xf0, 0x47, 0x08, 0xa9, // stp x16, x17, [sp, #128]
+      0xf2, 0x4f, 0x09, 0xa9, // stp x18, x19, [sp, #144]
+      0xf4, 0x57, 0x0a, 0xa9, // stp x20, x21, [sp, #160]
+      0xf6, 0x5f, 0x0b, 0xa9, // stp x22, x23, [sp, #176]
+      0xf8, 0x67, 0x0c, 0xa9, // stp x24, x25, [sp, #192]
+      0xfa, 0x6f, 0x0d, 0xa9, // stp x26, x27, [sp, #208]
+      0xfc, 0x77, 0x0e, 0xa9, // stp x28, x29, [sp, #224]
+      0xfe, 0x7f, 0x0f, 0xa9, // stp x30, xzr, [sp, #240]
+
+      // Call dlopen from libc address space
+      0xf3, 0x03, 0x06, 0xaa, // mov x19, x6 (save timezone_addr)
+      0x00, 0x03, 0x00, 0x10, // adr x0, lib_path (byte 192, +96)
+      0x41, 0x00, 0x80, 0xd2, // mov x1, #2 (RTLD_NOW)
+      0xa8, 0x03, 0x00, 0x58, // ldr x8, =dlopen_addr (byte 220, +116)
+      0x00, 0x01, 0x3f, 0xd6, // blr x8
+
+      // Signal completion via timezone
+      0x00, 0x00, 0x40, 0xb2, // orr x0, x0, #1 (done flag)
+      0x60, 0x02, 0x00, 0xf9, // str x0, [x19] (write to timezone)
+
+      // Restore all registers
+      0xe0, 0x07, 0x40, 0xa9, // ldp x0, x1, [sp, #0]
+      0xe2, 0x0f, 0x41, 0xa9, // ldp x2, x3, [sp, #16]
+      0xe4, 0x17, 0x42, 0xa9, // ldp x4, x5, [sp, #32]
+      0xe6, 0x1f, 0x43, 0xa9, // ldp x6, x7, [sp, #48]
+      0xe8, 0x27, 0x44, 0xa9, // ldp x8, x9, [sp, #64]
+      0xea, 0x2f, 0x45, 0xa9, // ldp x10, x11, [sp, #80]
+      0xec, 0x37, 0x46, 0xa9, // ldp x12, x13, [sp, #96]
+      0xee, 0x3f, 0x47, 0xa9, // ldp x14, x15, [sp, #112]
+      0xf0, 0x47, 0x48, 0xa9, // ldp x16, x17, [sp, #128]
+      0xf2, 0x4f, 0x49, 0xa9, // ldp x18, x19, [sp, #144]
+      0xf4, 0x57, 0x4a, 0xa9, // ldp x20, x21, [sp, #160]
+      0xf6, 0x5f, 0x4b, 0xa9, // ldp x22, x23, [sp, #176]
+      0xf8, 0x67, 0x4c, 0xa9, // ldp x24, x25, [sp, #192]
+      0xfa, 0x6f, 0x4d, 0xa9, // ldp x26, x27, [sp, #208]
+      0xfc, 0x77, 0x4e, 0xa9, // ldp x28, x29, [sp, #224]
+      0xfe, 0x7f, 0x4f, 0xa9, // ldp x30, xzr, [sp, #240]
+      0xff, 0x03, 0x04, 0x91, // add sp, sp, #256
+      0xd1, 0xff, 0xff, 0x17, // b byte_0 (spin on timezone)
+
+      // Data: lib_path "/data/local/tmp/libagent.so\0" (28 bytes)
+      0x2f, 0x64, 0x61, 0x74, // /dat
+      0x61, 0x2f, 0x6c, 0x6f, // a/lo
+      0x63, 0x61, 0x6c, 0x2f, // cal/
+      0x74, 0x6d, 0x70, 0x2f, // tmp/
+      0x6c, 0x69, 0x62, 0x61, // liba
+      0x67, 0x65, 0x6e, 0x74, // gent
+      0x2e, 0x73, 0x6f, 0x00, // .so\0
+      // Data: dlopen_addr placeholder (8 bytes, offset 220)
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      // Data: timezone_addr placeholder (8 bytes, offset 228)
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  };
+
+  // Patch dlopen_addr at offset 220
+  for (int i = 0; i < 8; i++) {
+    sc[220 + i] = (dlopen_addr >> (i * 8)) & 0xFF;
+  }
+
+  // Patch timezone_addr at offset 228
+  for (int i = 0; i < 8; i++) {
+    sc[228 + i] = (var_addr >> (i * 8)) & 0xFF;
+  }
+
+  return sc;
+}
+
 } // namespace shellcode

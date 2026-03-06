@@ -422,6 +422,11 @@ bool inject(int pid, const char *so_path) {
   std::cout << "  ✓ malloc: 0x" << std::hex << malloc_addr << std::dec << "\n";
   std::cout << "  ✓ dlopen: 0x" << std::hex << dlopen_addr << std::dec << "\n";
 
+  bool is_legacy_android = (strstr(libc_path, "/apex/") == nullptr);
+  if (is_legacy_android) {
+    std::cout << "  → Legacy Android detected (pre-10), using direct dlopen\n";
+  }
+
   std::cout << "[3/7] Preparing payload...\n";
   char final_path[64];
   bool using_temp_file = false;
@@ -439,51 +444,81 @@ bool inject(int pid, const char *so_path) {
   }
   final_path[sizeof(final_path) - 1] = '\0';
 
-  auto stage2 = shellcode::arm64_stage2_dlopen_linjector(
-      dlopen_addr, final_path, malloc_addr);
-  auto stage1 =
-      shellcode::arm64_stage1_linjector_exact(timezone_addr, stage2.size());
-  std::cout << "  ✓ Stage1: " << stage1.size() << "B, Stage2: " << stage2.size()
-            << "B\n";
+  if (is_legacy_android) {
+    // === Android 9 and below: Single-stage (direct dlopen from libc) ===
+    // On older Android, dlopen from anonymous mmap'd memory fails due to
+    // linker namespace restrictions. Stage 1 calls dlopen directly from
+    // libc's address space (malloc hook) to bypass this.
 
-  std::cout << "[4/7] Backing up original memory...\n";
-  auto malloc_backup = read_memory(pid, malloc_addr, stage1.size());
-  auto timezone_backup = read_memory(pid, timezone_addr, 8);
-  if (malloc_backup.empty() || timezone_backup.empty()) {
-    std::cerr << " Failed to backup memory\n";
-    return false;
-  }
-  std::cout << "  ✓ Backup complete\n";
+    auto stage1 = shellcode::arm64_stage1_direct_dlopen(timezone_addr, dlopen_addr);
+    std::cout << "  ✓ Stage1 (direct): " << stage1.size() << "B\n";
 
-  std::cout << "[5/7] Injecting stage 1 shellcode...\n";
-  std::vector<uint8_t> zero(8, 0);
-  if (!write_memory(pid, timezone_addr, zero)) {
-    std::cerr << " Failed to zero timezone\n";
-    return false;
-  }
-  if (!write_memory(pid, malloc_addr, stage1)) {
-    std::cerr << " Failed to write stage1\n";
-    write_memory(pid, timezone_addr, timezone_backup);
-    return false;
-  }
-  std::cout << "  ✓ Stage1 injected\n";
+    std::cout << "[4/7] Backing up original memory...\n";
+    auto malloc_backup = read_memory(pid, malloc_addr, stage1.size());
+    auto timezone_backup = read_memory(pid, timezone_addr, 8);
+    if (malloc_backup.empty() || timezone_backup.empty()) {
+      std::cerr << " Failed to backup memory\n";
+      return false;
+    }
+    std::cout << "  ✓ Backup complete\n";
 
-  std::cout << "[6/7] Waiting for malloc() trigger...\n";
-  uintptr_t new_map = 0;
-  int timeout_counter = 0;
-  const int MAX_TIMEOUT = 30000;
+    std::cout << "[5/7] Injecting shellcode...\n";
+    std::vector<uint8_t> zero(8, 0);
+    if (!write_memory(pid, timezone_addr, zero)) {
+      std::cerr << " Failed to zero timezone\n";
+      return false;
+    }
+    if (!write_memory(pid, malloc_addr, stage1)) {
+      std::cerr << " Failed to write stage1\n";
+      write_memory(pid, timezone_addr, timezone_backup);
+      return false;
+    }
+    std::cout << "  ✓ Stage1 injected\n";
 
-  char kill_cmd[256];
-  snprintf(kill_cmd, sizeof(kill_cmd), "kill -10 %d 2>/dev/null",
-           pid); // SIGUSR1 → GC
-  system(kill_cmd);
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  std::cout << "  → Trigger signals sent\n";
+    std::cout << "[6/7] Waiting for malloc() trigger...\n";
+    int timeout_counter = 0;
+    const int MAX_TIMEOUT = 30000;
 
-  while (true) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));
-    auto data = read_memory(pid, timezone_addr, 8);
-    if (data.size() != 8) {
+    char kill_cmd[256];
+    snprintf(kill_cmd, sizeof(kill_cmd), "kill -10 %d 2>/dev/null", pid);
+    system(kill_cmd);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::cout << "  → Trigger signals sent\n";
+
+    bool dlopen_ok = false;
+    while (true) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+      auto data = read_memory(pid, timezone_addr, 8);
+      if (data.size() != 8) {
+        timeout_counter++;
+        if (timeout_counter > MAX_TIMEOUT) {
+          std::cerr << " Timeout waiting for malloc trigger\n";
+          write_memory(pid, malloc_addr, malloc_backup);
+          write_memory(pid, timezone_addr, timezone_backup);
+          return false;
+        }
+        continue;
+      }
+
+      uint64_t val = 0;
+      memcpy(&val, data.data(), 8);
+
+      if (val != 0) {
+        dlopen_ok = (val > 1);
+        if (!dlopen_ok) {
+          // Android 9 quirk: dlopen may return NULL but library is still loaded
+          // (constructors run before namespace check fails)
+          // Verify by checking /proc/pid/maps
+          uintptr_t agent_base = find_library_base(pid, "libagent.so");
+          if (agent_base != 0) {
+            std::cout << "  → dlopen returned NULL but library loaded at 0x"
+                      << std::hex << agent_base << std::dec << "\n";
+            dlopen_ok = true;
+          }
+        }
+        break;
+      }
+
       timeout_counter++;
       if (timeout_counter > MAX_TIMEOUT) {
         std::cerr << " Timeout waiting for malloc trigger\n";
@@ -491,54 +526,132 @@ bool inject(int pid, const char *so_path) {
         write_memory(pid, timezone_addr, timezone_backup);
         return false;
       }
-      continue;
+    }
+    std::cout << "  ✓ Triggered! dlopen " << (dlopen_ok ? "succeeded" : "failed") << "\n";
+
+    std::cout << "[7/7] Restoring original functions...\n";
+
+    auto loop = shellcode::arm64_infinite_loop();
+    if (!write_memory(pid, malloc_addr, loop)) {
+      std::cerr << "Failed to write infinite loop\n";
     }
 
-    uint64_t val = 0;
-    memcpy(&val, data.data(), 8);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
-    if ((val & 0x1) && (val & 0xFFFFFFFFFFFFFFF0)) {
-      new_map = val & 0xFFFFFFFFFFFFFFF0;
-      break;
+    if (!write_memory(pid, malloc_addr, malloc_backup)) {
+      std::cerr << "Warning: Failed to restore malloc\n";
     }
+    if (!write_memory(pid, timezone_addr, timezone_backup)) {
+      std::cerr << "Warning: Failed to restore timezone\n";
+    }
+    std::cout << "  ✓ Original functions restored\n";
 
-    timeout_counter++;
-    if (timeout_counter > MAX_TIMEOUT) {
-      std::cerr << " Timeout waiting for malloc trigger\n";
-      write_memory(pid, malloc_addr, malloc_backup);
+    std::cout << "\n Injection " << (dlopen_ok ? "complete" : "FAILED")
+              << "! Loaded: " << so_path << "\n";
+    return dlopen_ok;
+
+  } else {
+    auto stage2 = shellcode::arm64_stage2_dlopen_linjector(
+        dlopen_addr, final_path, malloc_addr);
+    auto stage1 =
+        shellcode::arm64_stage1_linjector_exact(timezone_addr, stage2.size());
+    std::cout << "  ✓ Stage1: " << stage1.size() << "B, Stage2: " << stage2.size()
+              << "B\n";
+
+    std::cout << "[4/7] Backing up original memory...\n";
+    auto malloc_backup = read_memory(pid, malloc_addr, stage1.size());
+    auto timezone_backup = read_memory(pid, timezone_addr, 8);
+    if (malloc_backup.empty() || timezone_backup.empty()) {
+      std::cerr << " Failed to backup memory\n";
+      return false;
+    }
+    std::cout << "  ✓ Backup complete\n";
+
+    std::cout << "[5/7] Injecting stage 1 shellcode...\n";
+    std::vector<uint8_t> zero(8, 0);
+    if (!write_memory(pid, timezone_addr, zero)) {
+      std::cerr << " Failed to zero timezone\n";
+      return false;
+    }
+    if (!write_memory(pid, malloc_addr, stage1)) {
+      std::cerr << " Failed to write stage1\n";
       write_memory(pid, timezone_addr, timezone_backup);
       return false;
     }
+    std::cout << "  ✓ Stage1 injected\n";
+
+    std::cout << "[6/7] Waiting for malloc() trigger...\n";
+    uintptr_t new_map = 0;
+    int timeout_counter = 0;
+    const int MAX_TIMEOUT = 30000;
+
+    char kill_cmd[256];
+    snprintf(kill_cmd, sizeof(kill_cmd), "kill -10 %d 2>/dev/null",
+             pid); // SIGUSR1 → GC
+    system(kill_cmd);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::cout << "  → Trigger signals sent\n";
+
+    while (true) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+      auto data = read_memory(pid, timezone_addr, 8);
+      if (data.size() != 8) {
+        timeout_counter++;
+        if (timeout_counter > MAX_TIMEOUT) {
+          std::cerr << " Timeout waiting for malloc trigger\n";
+          write_memory(pid, malloc_addr, malloc_backup);
+          write_memory(pid, timezone_addr, timezone_backup);
+          return false;
+        }
+        continue;
+      }
+
+      uint64_t val = 0;
+      memcpy(&val, data.data(), 8);
+
+      if ((val & 0x1) && (val & 0xFFFFFFFFFFFFFFF0)) {
+        new_map = val & 0xFFFFFFFFFFFFFFF0;
+        break;
+      }
+
+      timeout_counter++;
+      if (timeout_counter > MAX_TIMEOUT) {
+        std::cerr << " Timeout waiting for malloc trigger\n";
+        write_memory(pid, malloc_addr, malloc_backup);
+        write_memory(pid, timezone_addr, timezone_backup);
+        return false;
+      }
+    }
+    std::cout << "  ✓ Triggered! New map: 0x" << std::hex << new_map << std::dec
+              << "\n";
+
+    std::cout << "[7/7] Finalizing injection...\n";
+
+    if (!write_memory(pid, new_map, stage2)) {
+      std::cerr << "Failed to write stage2\n";
+      return false;
+    }
+    std::cout << "  ✓ Stage2 written to new map\n";
+
+    auto loop = shellcode::arm64_infinite_loop();
+    if (!write_memory(pid, malloc_addr, loop)) {
+      std::cerr << "Failed to write infinite loop\n";
+      return false;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    if (!write_memory(pid, malloc_addr, malloc_backup)) {
+      std::cerr << "Warning: Failed to restore malloc\n";
+    }
+    if (!write_memory(pid, timezone_addr, timezone_backup)) {
+      std::cerr << "Warning: Failed to restore timezone\n";
+    }
+    std::cout << "  ✓ Original functions restored\n";
+
+    std::cout << "\n Injection complete! Loaded: " << so_path << "\n";
+    return true;
   }
-  std::cout << "  ✓ Triggered! New map: 0x" << std::hex << new_map << std::dec
-            << "\n";
-
-  std::cout << "[7/7] Finalizing injection...\n";
-
-  if (!write_memory(pid, new_map, stage2)) {
-    std::cerr << "Failed to write stage2\n";
-    return false;
-  }
-  std::cout << "  ✓ Stage2 written to new map\n";
-
-  auto loop = shellcode::arm64_infinite_loop();
-  if (!write_memory(pid, malloc_addr, loop)) {
-    std::cerr << "Failed to write infinite loop\n";
-    return false;
-  }
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-
-  if (!write_memory(pid, malloc_addr, malloc_backup)) {
-    std::cerr << "Warning: Failed to restore malloc\n";
-  }
-  if (!write_memory(pid, timezone_addr, timezone_backup)) {
-    std::cerr << "Warning: Failed to restore timezone\n";
-  }
-  std::cout << "  ✓ Original functions restored\n";
-
-  std::cout << "\n Injection complete! Loaded: " << so_path << "\n";
-  return true;
 }
 
 #ifdef BUILD_STANDALONE_AGENT
