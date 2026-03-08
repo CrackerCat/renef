@@ -31,7 +31,6 @@ JNIEnv* g_current_jni_env = NULL;
 
 JavaVM* g_java_vm = NULL;
 
-int g_default_hook_type = HOOK_TRAMPOLINE;
 
 JNIEnv* get_current_jni_env(void) {
     JNIEnv* env = NULL;

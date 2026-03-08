@@ -21,8 +21,9 @@ typedef struct {
 } TrampolineHook;
 
 typedef struct {
-    void** got_entry;
-    void* original_func;
+    void** got_entries[64];
+    void* original_funcs[64];
+    int patched_count;
     void* hook_func;
 } PltGotHook;
 
@@ -51,10 +52,9 @@ uint32_t create_branch_insn(void* from, void* to);
 void* allocate_trampoline(size_t size);
 size_t disassemble_instructions(void* addr, void** insn_out, size_t min_bytes);
 bool is_pc_relative(void* insn);
-void** find_got_entry(void* func_addr);
 int install_trampoline_hook(void* target_func, void* hook_func, HookInfo* hook_info);
-int install_plt_got_hook(void* target_func, void* hook_func, HookInfo* hook_info);
-bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, int onLeave_ref);
+int install_plt_got_hook(void* target_func, void* hook_func, HookInfo* hook_info, const char* caller_lib);
+bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, int onLeave_ref, const char* caller_lib);
 
 void generic_hook_handler(void);
 void hook_logger(uint64_t* saved_regs);

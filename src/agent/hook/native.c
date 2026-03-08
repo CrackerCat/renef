@@ -6,6 +6,9 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <pthread.h>
+#include <dlfcn.h>
+#include <link.h>
+#include <elf.h>
 #include <capstone/capstone.h>
 #include <capstone/arm64.h>
 
@@ -99,59 +102,167 @@ bool is_pc_relative(void* insn_ptr) {
     }
 }
 
-void** find_got_entry(void* func_addr) {
+// --- Dynamic PLT/GOT resolution via dl_iterate_phdr ---
 
+struct got_scan_ctx {
+    const char* sym_name;       // Symbol name to find (e.g. "memcpy")
+    const char* caller_lib;     // Optional: only patch this library's GOT
+    void* hook_func;            // The hook thunk to redirect to
+    HookInfo* hook_info;        // Where to store patched GOT entries
+    void* original_func;        // The resolved original function address
+};
 
-    uint32_t* insns = (uint32_t*)func_addr;
+static int got_scan_callback(struct dl_phdr_info *info, size_t size, void *data) {
+    struct got_scan_ctx *ctx = (struct got_scan_ctx *)data;
 
-    if ((insns[0] & 0x9F000000) == 0x90000000) {
-        uint64_t page = ((uint64_t)func_addr & ~0xFFFULL);
-        int64_t immhi = (insns[0] >> 5) & 0x7FFFF;
-        int64_t immlo = (insns[0] >> 29) & 0x3;
-        int64_t imm = ((immhi << 2) | immlo) << 12;
-        if (imm & (1ULL << 32)) {
-            imm |= 0xFFFFFFFF00000000ULL;
+    // Skip entries with no name (vdso, main executable)
+    if (!info->dlpi_name || strlen(info->dlpi_name) == 0) {
+        return 0;
+    }
+
+    // If caller_lib is specified, only scan matching libraries
+    // caller_lib can be a single name or comma-separated list
+    if (ctx->caller_lib && strlen(ctx->caller_lib) > 0) {
+        bool match = false;
+        char callers_copy[1024];
+        strncpy(callers_copy, ctx->caller_lib, sizeof(callers_copy) - 1);
+        callers_copy[sizeof(callers_copy) - 1] = '\0';
+
+        char* saveptr = NULL;
+        char* token = strtok_r(callers_copy, ",", &saveptr);
+        while (token) {
+            if (strstr(info->dlpi_name, token)) {
+                match = true;
+                break;
+            }
+            token = strtok_r(NULL, ",", &saveptr);
         }
-        page += imm;
+        if (!match) return 0;
+    } else {
+        // No caller specified — should not reach here for PLT/GOT
+        return 0;
+    }
 
-        if ((insns[1] & 0xFFC00000) == 0xF9400000) {
-            uint32_t ldr_imm = (insns[1] >> 10) & 0xFFF;
-            uint64_t got_addr = page + (ldr_imm * 8);
-            return (void**)got_addr;
+    ElfW(Addr) base = info->dlpi_addr;
+
+    // Find PT_DYNAMIC segment
+    const ElfW(Dyn)* dyn = NULL;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
+            dyn = (const ElfW(Dyn)*)(base + info->dlpi_phdr[i].p_vaddr);
+            break;
         }
     }
 
-    LOGE("Could not find GOT entry for function at %p", func_addr);
-    return NULL;
+    if (!dyn) return 0;
+
+    // Extract dynamic entries
+    ElfW(Addr) jmprel_addr = 0;
+    size_t pltrelsz = 0;
+    ElfW(Addr) symtab_addr = 0;
+    ElfW(Addr) strtab_addr = 0;
+
+    for (const ElfW(Dyn)* d = dyn; d->d_tag != DT_NULL; d++) {
+        switch (d->d_tag) {
+            case DT_JMPREL:   jmprel_addr  = d->d_un.d_ptr; break;
+            case DT_PLTRELSZ: pltrelsz     = d->d_un.d_val; break;
+            case DT_SYMTAB:   symtab_addr  = d->d_un.d_ptr; break;
+            case DT_STRTAB:   strtab_addr  = d->d_un.d_ptr; break;
+        }
+    }
+
+    if (!jmprel_addr || !symtab_addr || !strtab_addr || pltrelsz == 0) {
+        return 0;
+    }
+
+    // On Android, d_ptr values may be relative offsets (not relocated by linker).
+    // Detect this: if the value is smaller than the module base, it's relative.
+    if (jmprel_addr < base)  jmprel_addr  += base;
+    if (symtab_addr < base)  symtab_addr  += base;
+    if (strtab_addr < base)  strtab_addr  += base;
+
+    const ElfW(Rela)* jmprel = (const ElfW(Rela)*)jmprel_addr;
+    const ElfW(Sym)* symtab  = (const ElfW(Sym)*)symtab_addr;
+    const char* strtab       = (const char*)strtab_addr;
+
+    size_t rela_count = pltrelsz / sizeof(ElfW(Rela));
+
+    verbose_log("Scanning GOT of %s (%zu relocation entries)", info->dlpi_name, rela_count);
+
+    for (size_t i = 0; i < rela_count; i++) {
+        unsigned long sym_idx = ELF64_R_SYM(jmprel[i].r_info);
+        const char* name = strtab + symtab[sym_idx].st_name;
+
+        if (strcmp(name, ctx->sym_name) == 0) {
+            void** got_addr = (void**)(base + jmprel[i].r_offset);
+
+            LOGI("Found GOT entry for '%s' in %s at %p (current value: %p)",
+                 ctx->sym_name, info->dlpi_name, got_addr, *got_addr);
+
+            if (change_page_protection(got_addr, PROT_READ | PROT_WRITE) != 0) {
+                LOGE("Failed to change GOT page protection for %p", got_addr);
+                continue;
+            }
+
+            int idx = ctx->hook_info->data.plt_got.patched_count;
+            if (idx >= 64) {
+                LOGW("Maximum GOT patches reached (64)");
+                return 1; // Stop iteration
+            }
+
+            // Save original and patch
+            ctx->hook_info->data.plt_got.got_entries[idx] = got_addr;
+            ctx->hook_info->data.plt_got.original_funcs[idx] = *got_addr;
+            if (idx == 0) {
+                ctx->original_func = *got_addr;
+            }
+
+            *got_addr = ctx->hook_func;
+            ctx->hook_info->data.plt_got.patched_count++;
+
+            LOGI("Patched GOT entry at %p: %p -> %p",
+                 got_addr, ctx->hook_info->data.plt_got.original_funcs[idx], ctx->hook_func);
+        }
+    }
+
+    return 0;
 }
 
-int install_plt_got_hook(void* target_func, void* hook_func, HookInfo* hook_info) {
+int install_plt_got_hook(void* target_func, void* hook_func, HookInfo* hook_info, const char* caller_lib) {
     LOGI("Installing PLT/GOT hook: target=%p hook=%p", target_func, hook_func);
 
-    void** got_entry = find_got_entry(target_func);
-    if (!got_entry) {
-        LOGE("Failed to find GOT entry");
+    // Step 1: Resolve symbol name via dladdr
+    Dl_info dl_info;
+    if (!dladdr(target_func, &dl_info) || !dl_info.dli_sname) {
+        LOGE("dladdr failed: cannot resolve symbol name for %p", target_func);
         return -1;
     }
 
-    LOGI("Found GOT entry at %p, current value: %p", got_entry, *got_entry);
+    LOGI("Resolved symbol: %s (from %s)", dl_info.dli_sname, dl_info.dli_fname);
 
-    if (change_page_protection(got_entry, PROT_READ | PROT_WRITE) != 0) {
-        LOGE("Failed to change GOT page protection");
-        return -1;
-    }
-
-    void* original_func = *got_entry;
-
-    *got_entry = hook_func;
-
+    // Step 2: Initialize hook_info for PLT/GOT
     hook_info->type = HOOK_PLT_GOT;
-    hook_info->data.plt_got.got_entry = got_entry;
-    hook_info->data.plt_got.original_func = original_func;
+    hook_info->data.plt_got.patched_count = 0;
     hook_info->data.plt_got.hook_func = hook_func;
 
-    LOGI("PLT/GOT hook installed: GOT entry=%p, original=%p, hook=%p",
-         got_entry, original_func, hook_func);
+    // Step 3: Scan loaded modules for GOT entries matching the symbol
+    struct got_scan_ctx ctx = {
+        .sym_name = dl_info.dli_sname,
+        .caller_lib = caller_lib,
+        .hook_func = hook_func,
+        .hook_info = hook_info,
+        .original_func = NULL
+    };
+
+    dl_iterate_phdr(got_scan_callback, &ctx);
+
+    if (hook_info->data.plt_got.patched_count == 0) {
+        LOGE("No GOT entries found for symbol '%s'", dl_info.dli_sname);
+        return -1;
+    }
+
+    LOGI("PLT/GOT hook installed: %d GOT entries patched for '%s'",
+         hook_info->data.plt_got.patched_count, dl_info.dli_sname);
 
     return 0;
 }
@@ -269,29 +380,31 @@ int uninstall_hook(int hook_id) {
         hook->data.trampoline.trampoline_addr = NULL;
 
     } else if (hook->type == HOOK_PLT_GOT) {
-        if (hook->data.plt_got.got_entry == NULL) {
+        if (hook->data.plt_got.patched_count == 0) {
             LOGI("Hook %d already uninstalled", hook_id);
             return 0;
         }
 
-        void** got_entry = hook->data.plt_got.got_entry;
+        for (int i = 0; i < hook->data.plt_got.patched_count; i++) {
+            void** got_entry = hook->data.plt_got.got_entries[i];
+            if (!got_entry) continue;
 
-        if (change_page_protection(got_entry, PROT_READ | PROT_WRITE) != 0) {
-            LOGE("Failed to change page protection for unhook");
-            return -1;
+            if (change_page_protection(got_entry, PROT_READ | PROT_WRITE) != 0) {
+                LOGE("Failed to change GOT page protection for uninstall (entry %d)", i);
+                continue;
+            }
+
+            *got_entry = hook->data.plt_got.original_funcs[i];
+            __builtin___clear_cache((char*)got_entry, (char*)got_entry + sizeof(void*));
+            hook->data.plt_got.got_entries[i] = NULL;
         }
 
-        *got_entry = hook->data.plt_got.original_func;
+        hook->data.plt_got.patched_count = 0;
 
-        LOGI("Restored GOT entry at %p to %p", got_entry, hook->data.plt_got.original_func);
-
-        hook->data.plt_got.got_entry = NULL;
-        hook->data.plt_got.original_func = NULL;
-    }
-
-    if (hook->thunk_addr) {
-        munmap(hook->thunk_addr, PAGE_SIZE);
-        hook->thunk_addr = NULL;
+        if (hook->thunk_addr) {
+            munmap(hook->thunk_addr, PAGE_SIZE);
+            hook->thunk_addr = NULL;
+        }
     }
 
     if (g_lua_engine && hook->lua_onEnter_ref != LUA_NOREF) {
@@ -322,7 +435,7 @@ int uninstall_all_hooks(void) {
         if (g_hooks[i].type == HOOK_TRAMPOLINE) {
             is_installed = (g_hooks[i].data.trampoline.target_addr != NULL);
         } else if (g_hooks[i].type == HOOK_PLT_GOT) {
-            is_installed = (g_hooks[i].data.plt_got.got_entry != NULL);
+            is_installed = (g_hooks[i].data.plt_got.patched_count > 0);
         }
 
         if (is_installed && uninstall_hook(i) == 0) {
@@ -360,7 +473,7 @@ void* create_hook_thunk(int hook_index) {
     return thunk;
 }
 
-bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, int onLeave_ref) {
+bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, int onLeave_ref, const char* caller_lib) {
     LOGI("Installing Lua hook: %s+0x%lx", lib_name, offset);
 
     uintptr_t base = (uintptr_t)find_library_base(lib_name);
@@ -391,9 +504,9 @@ bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, i
     hook_info->thunk_addr = thunk;
 
     int result = -1;
-    if (g_default_hook_type == HOOK_PLT_GOT) {
-        LOGI("Using PLT/GOT hooking method");
-        result = install_plt_got_hook((void*)target_addr, thunk, hook_info);
+    if (caller_lib && strlen(caller_lib) > 0) {
+        LOGI("Using PLT/GOT hooking method (caller: %s)", caller_lib);
+        result = install_plt_got_hook((void*)target_addr, thunk, hook_info, caller_lib);
     } else {
         LOGI("Using trampoline hooking method");
         result = install_trampoline_hook((void*)target_addr, thunk, hook_info);
@@ -409,7 +522,7 @@ bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, i
 
     LOGI("Lua hook #%d installed (type=%s, onEnter=%d, onLeave=%d)",
          hook_index,
-         g_default_hook_type == HOOK_PLT_GOT ? "PLT/GOT" : "Trampoline",
+         (caller_lib && strlen(caller_lib) > 0) ? "PLT/GOT" : "Trampoline",
          onEnter_ref, onLeave_ref);
     return true;
 }
@@ -609,7 +722,9 @@ void* get_current_trampoline(void) {
         if (hook->type == HOOK_TRAMPOLINE) {
             return hook->data.trampoline.trampoline_addr;
         } else if (hook->type == HOOK_PLT_GOT) {
-            return hook->data.plt_got.original_func;
+            return (hook->data.plt_got.patched_count > 0)
+                ? hook->data.plt_got.original_funcs[0]
+                : NULL;
         }
     }
     return NULL;

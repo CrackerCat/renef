@@ -878,7 +878,6 @@ int main(int argc, char *argv[]) {
     std::string script_file;
     std::string attach_pid;
     std::string spawn_app;
-    std::string hook_type;
     bool view_mode = false;
 
     for (int i = 1; i < argc; i++) {
@@ -895,12 +894,6 @@ int main(int argc, char *argv[]) {
         }
         else if ((arg == "-s" || arg == "--spawn") && i + 1 < argc) {
             spawn_app = argv[++i];
-        }
-        else if (arg == "--hook" && i + 1 < argc) {
-            hook_type = argv[++i];
-        }
-        else if (arg.rfind("--hook=", 0) == 0) {
-            hook_type = arg.substr(7);
         }
         else if ((arg == "-g" || arg == "--gadget") && i + 1 < argc) {
             g_gadget_pid = std::stoi(argv[++i]);
@@ -1058,20 +1051,10 @@ int main(int argc, char *argv[]) {
 
         if (!spawn_app.empty()) {
             start_cmd = "spawn " + spawn_app;
-            if (!hook_type.empty()) {
-                start_cmd += " --hook=" + hook_type;
-                std::cout << "[*] Spawning " << spawn_app << " (hook: " << hook_type << ")...\n";
-            } else {
-                std::cout << "[*] Spawning " << spawn_app << "...\n";
-            }
+            std::cout << "[*] Spawning " << spawn_app << "...\n";
         } else {
             start_cmd = "attach " + attach_pid;
-            if (!hook_type.empty()) {
-                start_cmd += " --hook=" + hook_type;
-                std::cout << "[*] Attaching to PID " << attach_pid << " (hook: " << hook_type << ")...\n";
-            } else {
-                std::cout << "[*] Attaching to PID " << attach_pid << "...\n";
-            }
+            std::cout << "[*] Attaching to PID " << attach_pid << "...\n";
         }
 
         std::string response = send_command(start_cmd);

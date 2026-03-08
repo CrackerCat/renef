@@ -28,7 +28,6 @@ static std::string build_adb_cmd_attach(const std::string &cmd) {
 
 struct AttachParams {
   int pid;
-  std::string hook_type;
 };
 
 static AttachParams parse_attach_params(const char *cmd_buffer,
@@ -53,16 +52,11 @@ static AttachParams parse_attach_params(const char *cmd_buffer,
 
   size_t hook_pos = args.find("--hook=");
   if (hook_pos != std::string::npos) {
-    size_t hook_start = hook_pos + 7;
-    size_t hook_end = args.find(' ', hook_start);
-    if (hook_end == std::string::npos) {
-      hook_end = args.length();
-    }
-    params.hook_type = args.substr(hook_start, hook_end - hook_start);
-
+    // Legacy: strip --hook= argument if present (no longer used)
+    size_t hook_end = args.find(' ', hook_pos);
+    if (hook_end == std::string::npos) hook_end = args.length();
     std::string before_hook = args.substr(0, hook_pos);
-    std::string after_hook =
-        (hook_end < args.length()) ? args.substr(hook_end) : "";
+    std::string after_hook = (hook_end < args.length()) ? args.substr(hook_end) : "";
     args = before_hook + after_hook;
   }
 
@@ -139,12 +133,6 @@ public:
           sock.send_data(con_cmd.c_str(), con_cmd.length(), false);
 
       sock.set_session_key(session_key);
-
-      if (!params.hook_type.empty()) {
-        std::string hook_cmd =
-            "exec _G.__hook_type__ = \"" + params.hook_type + "\"\n";
-        sock.send_data(hook_cmd.c_str(), hook_cmd.length(), false);
-      }
     }
 
     const char *response = is_injected ? "OK\n" : "FAIL\n";

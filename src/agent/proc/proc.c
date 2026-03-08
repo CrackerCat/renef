@@ -518,7 +518,9 @@ elf_exports_t* get_exports(const char* lib_name) {
         unsigned char type = ELF64_ST_TYPE(symtab[i].st_info);
         unsigned char bind = ELF64_ST_BIND(symtab[i].st_info);
 
-        if (type == STT_FUNC && symtab[i].st_value != 0 &&
+        if ((type == STT_FUNC || type == STT_OBJECT || type == STT_NOTYPE || type == STT_GNU_IFUNC) && 
+            symtab[i].st_value != 0 &&
+            symtab[i].st_shndx != SHN_UNDEF &&
             (bind == STB_GLOBAL || bind == STB_WEAK)) {
 
             elf_export_t* exp = &result->exports[result->count];
@@ -643,7 +645,9 @@ elf_exports_t* get_symbols(const char* lib_name) {
     for (size_t i = 0; i < sym_count; i++) {
         unsigned char type = ELF64_ST_TYPE(symtab[i].st_info);
 
-        if (type == STT_FUNC && symtab[i].st_value != 0) {
+        if ((type == STT_FUNC || type == STT_OBJECT || type == STT_NOTYPE || type == STT_GNU_IFUNC) && 
+            symtab[i].st_value != 0 &&
+            symtab[i].st_shndx != SHN_UNDEF) {
             elf_export_t* exp = &result->exports[result->count];
             const char* name = strtab + symtab[i].st_name;
 
