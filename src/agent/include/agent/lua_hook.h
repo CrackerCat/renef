@@ -34,7 +34,7 @@ typedef struct HookTarget{
 void register_memory_api(lua_State* L);
 
 bool install_lua_hook(const char* lib_name, uintptr_t offset,
-                      int onEnter_ref, int onLeave_ref);
+                      int onEnter_ref, int onLeave_ref, const char* caller_lib);
 
 #ifdef __cplusplus
 }

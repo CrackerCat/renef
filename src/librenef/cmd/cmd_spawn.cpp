@@ -16,7 +16,6 @@
 
 struct SpawnParams {
   std::string pkg_name;
-  std::string hook_type;
 };
 
 static SpawnParams parse_spawn_params(const char *cmd_buffer, size_t cmd_size) {
@@ -38,16 +37,11 @@ static SpawnParams parse_spawn_params(const char *cmd_buffer, size_t cmd_size) {
 
   size_t hook_pos = args.find("--hook=");
   if (hook_pos != std::string::npos) {
-    size_t hook_start = hook_pos + 7;
-    size_t hook_end = args.find(' ', hook_start);
-    if (hook_end == std::string::npos) {
-      hook_end = args.length();
-    }
-    params.hook_type = args.substr(hook_start, hook_end - hook_start);
-
+    // Legacy: strip --hook= argument if present (no longer used)
+    size_t hook_end = args.find(' ', hook_pos);
+    if (hook_end == std::string::npos) hook_end = args.length();
     std::string before_hook = args.substr(0, hook_pos);
-    std::string after_hook =
-        (hook_end < args.length()) ? args.substr(hook_end) : "";
+    std::string after_hook = (hook_end < args.length()) ? args.substr(hook_end) : "";
     args = before_hook + after_hook;
   }
 
@@ -92,7 +86,6 @@ public:
     SpawnParams params = parse_spawn_params(cmd_buffer, cmd_size);
 
     std::cerr << "  Package name: '" << params.pkg_name << "'" << std::endl;
-    std::cerr << "  Hook type: '" << params.hook_type << "'" << std::endl;
     std::cerr << "  Raw command: '" << std::string(cmd_buffer, cmd_size) << "'"
               << std::endl;
 
@@ -173,12 +166,6 @@ public:
           sock.send_data(con_cmd.c_str(), con_cmd.length(), false);
 
       sock.set_session_key(session_key);
-
-      if (!params.hook_type.empty()) {
-        std::string hook_cmd =
-            "exec _G.__hook_type__ = \"" + params.hook_type + "\"\n";
-        sock.send_data(hook_cmd.c_str(), hook_cmd.length(), false);
-      }
 
       snprintf(response, sizeof(response), "OK %d\n", pid);
     } else {

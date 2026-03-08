@@ -58,23 +58,6 @@ static struct HookTarget create_java_target(lua_State* L) {
 static int lua_hook(lua_State* L) {
     struct HookTarget target;
 
-    lua_getglobal(L, "__hook_type__");
-    if (lua_isstring(L, -1)) {
-        const char* hook_type_str = lua_tostring(L, -1);
-        verbose_log("Global hook type detected: %s", hook_type_str);
-
-        if (strcmp(hook_type_str, "pltgot") == 0) {
-            g_default_hook_type = HOOK_PLT_GOT;
-            verbose_log("Hook type set to PLT/GOT");
-        } else if (strcmp(hook_type_str, "trampoline") == 0) {
-            g_default_hook_type = HOOK_TRAMPOLINE;
-            verbose_log("Hook type set to trampoline");
-        } else {
-            verbose_log("Unknown hook type '%s', using default", hook_type_str);
-        }
-    }
-    lua_pop(L, 1);
-
     if (lua_isnumber(L, 2)) {
         target = create_native_target(L);
     } else if (lua_isstring(L, 2)) {
@@ -122,12 +105,56 @@ static int lua_hook(lua_State* L) {
         verbose_log("onLeave callback registered (ref: %d)", onLeave_ref);
     }
 
+    // Parse optional 'caller' field for PLT/GOT targeted hooking
+    // Can be a string (single library) or a table (array of library names)
+    const char* caller_lib = NULL;
+    static char caller_buf[1024];
+    caller_buf[0] = '\0';
+
+    lua_getfield(L, callback_index, "caller");
+    if (lua_isstring(L, -1)) {
+        caller_lib = lua_tostring(L, -1);
+        verbose_log("Caller library specified: %s", caller_lib);
+    } else if (lua_istable(L, -1)) {
+        size_t buf_pos = 0;
+        int len = (int)lua_rawlen(L, -1);
+        for (int i = 1; i <= len; i++) {
+            lua_rawgeti(L, -1, i);
+            if (lua_isstring(L, -1)) {
+                const char* name = lua_tostring(L, -1);
+                if (buf_pos > 0 && buf_pos < sizeof(caller_buf) - 1) {
+                    caller_buf[buf_pos++] = ',';
+                }
+                size_t name_len = strlen(name);
+                if (buf_pos + name_len < sizeof(caller_buf) - 1) {
+                    memcpy(caller_buf + buf_pos, name, name_len);
+                    buf_pos += name_len;
+                }
+            }
+            lua_pop(L, 1);
+        }
+        caller_buf[buf_pos] = '\0';
+        if (buf_pos > 0) {
+            caller_lib = caller_buf;
+            verbose_log("Caller libraries specified: %s", caller_lib);
+        }
+    }
+    lua_pop(L, 1);
+
+    // Auto-detect hook type: caller present = PLT/GOT, absent = trampoline
+    if (caller_lib) {
+        verbose_log("Hook type auto-selected: PLT/GOT (caller=%s)", caller_lib);
+    } else {
+        verbose_log("Hook type auto-selected: Trampoline (no caller)");
+    }
+
     verbose_log("Hook target: type=%d, callbacks registered", target.type);
 
     if (target.type == NATIVE_METHOD) {
         bool result = install_lua_hook(target.info.native.lib_name,
                                        target.info.native.offset,
-                                       onEnter_ref, onLeave_ref);
+                                       onEnter_ref, onLeave_ref,
+                                       caller_lib);
         if (!result) {
             return luaL_error(L, "Failed to install native hook");
         }
