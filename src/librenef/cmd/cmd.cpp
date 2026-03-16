@@ -37,6 +37,7 @@ std::unique_ptr<CommandDispatcher> create_sec_command();
 std::unique_ptr<CommandDispatcher> create_memdump_command();
 std::unique_ptr<CommandDispatcher> create_hookgen_command();
 std::unique_ptr<CommandDispatcher> create_verbose_command();
+std::unique_ptr<CommandDispatcher> create_strace_command();
 
 void CommandRegistry::register_command(std::unique_ptr<CommandDispatcher> cmd) {
     if (!cmd) {
@@ -103,20 +104,15 @@ CommandResult CommandRegistry::dispatch(int client_fd, const char* cmd_buffer, s
         }
     }
 
-    for (char c : cmd_name) {
-        printf("%02x ", (unsigned char)c);
-    }
-    std::cout << "\n";
-    for (const auto& pair : commands) {
-        std::cout << "'" << pair.first << "' (len=" << pair.first.length() << ") ";
-    }
-    std::cout << "\n";
-
     auto it = commands.find(cmd_name);
     if (it == commands.end()) {
         const char* error_msg = "ERROR: Unknown command. Type 'help' for available commands.\n";
         write(client_fd, error_msg, strlen(error_msg));
         return CommandResult(false, "Unknown command: " + cmd_name);
+    }
+
+    if (sock.is_connected()) {
+        sock.drain_buffer();
     }
 
     return it->second->dispatch(client_fd, cmd_buffer, cmd_size);
@@ -139,6 +135,7 @@ void CommandRegistry::setup_all_commands() {
     register_command(create_memdump_command());
     register_command(create_hookgen_command());
     register_command(create_verbose_command());
+    register_command(create_strace_command());
 }
 
 bool CommandRegistry::is_command_exist(const std::string& name) {

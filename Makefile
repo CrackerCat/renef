@@ -103,6 +103,7 @@ SERVER_SRCS := src/server/main.cpp \
                src/librenef/cmd/cmd_sec.cpp \
                src/librenef/cmd/cmd_memdump.cpp \
                src/librenef/cmd/cmd_hookgen.cpp \
+               src/librenef/cmd/cmd_strace.cpp \
                src/librenef/util/string.cpp \
                src/librenef/util/crypto.cpp \
                src/librenef/util/socket.cpp \
@@ -164,7 +165,9 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/lua/api_thread.c \
               src/agent/lua/api_file.c \
               src/agent/lua/api_jni.c \
-              src/agent/lua/api_java.c
+              src/agent/lua/api_java.c \
+              src/agent/strace/strace.c \
+              src/agent/lua/api_strace.c
 
 .PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local
 
@@ -397,6 +400,7 @@ CLIENT_ANDROID_SRCS := src/binr/renef/main.cpp \
                        src/librenef/cmd/cmd_sec.cpp \
                        src/librenef/cmd/cmd_memdump.cpp \
                        src/librenef/cmd/cmd_hookgen.cpp \
+                       src/librenef/cmd/cmd_strace.cpp \
                        src/librenef/cmd/cmd_plugin.cpp \
                        src/librenef/transport/server.cpp \
                        src/librenef/transport/uds.cpp \

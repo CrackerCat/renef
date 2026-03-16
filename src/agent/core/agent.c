@@ -608,7 +608,9 @@ static void* command_handler(void* arg) {
 
         g_output_client_fd = -1;
         close(client_fd);
-        LOGI("Connection closed");
+        is_agent_established = false;
+        memset(session_key, 0, sizeof(session_key));
+        LOGI("Connection closed, session reset");
     }
 
     close(server_fd);

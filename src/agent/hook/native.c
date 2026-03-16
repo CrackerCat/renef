@@ -123,21 +123,24 @@ static int got_scan_callback(struct dl_phdr_info *info, size_t size, void *data)
     // If caller_lib is specified, only scan matching libraries
     // caller_lib can be a single name or comma-separated list
     if (ctx->caller_lib && strlen(ctx->caller_lib) > 0) {
-        bool match = false;
-        char callers_copy[1024];
-        strncpy(callers_copy, ctx->caller_lib, sizeof(callers_copy) - 1);
-        callers_copy[sizeof(callers_copy) - 1] = '\0';
+        // "*" wildcard — scan all libraries
+        if (strcmp(ctx->caller_lib, "*") != 0) {
+            bool match = false;
+            char callers_copy[1024];
+            strncpy(callers_copy, ctx->caller_lib, sizeof(callers_copy) - 1);
+            callers_copy[sizeof(callers_copy) - 1] = '\0';
 
-        char* saveptr = NULL;
-        char* token = strtok_r(callers_copy, ",", &saveptr);
-        while (token) {
-            if (strstr(info->dlpi_name, token)) {
-                match = true;
-                break;
+            char* saveptr = NULL;
+            char* token = strtok_r(callers_copy, ",", &saveptr);
+            while (token) {
+                if (strstr(info->dlpi_name, token)) {
+                    match = true;
+                    break;
+                }
+                token = strtok_r(NULL, ",", &saveptr);
             }
-            token = strtok_r(NULL, ",", &saveptr);
+            if (!match) return 0;
         }
-        if (!match) return 0;
     } else {
         // No caller specified — should not reach here for PLT/GOT
         return 0;

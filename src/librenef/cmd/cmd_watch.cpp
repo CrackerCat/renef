@@ -97,6 +97,15 @@ public:
             }
         }
 
+        {
+            char drain_buf[4096];
+            struct pollfd drain_pfd = {sock, POLLIN, 0};
+            while (poll(&drain_pfd, 1, 50) > 0 && (drain_pfd.revents & POLLIN)) {
+                ssize_t n = recv(sock, drain_buf, sizeof(drain_buf), 0);
+                if (n <= 0) break;
+            }
+        }
+
         fcntl(sock, F_SETFL, flags);
         fcntl(client_fd, F_SETFL, client_flags);
 

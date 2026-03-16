@@ -4,6 +4,9 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <poll.h>
 
 SocketHelper::SocketHelper()
     : transport(nullptr), current_pid(-1) {
@@ -63,6 +66,30 @@ ssize_t SocketHelper::receive_data(void* buffer, size_t size) {
         return -1;
     }
     return transport->receive_data(buffer, size);
+}
+
+void SocketHelper::drain_buffer() {
+    if (!transport || !transport->is_connected()) return;
+
+    int fd = transport->get_fd();
+    if (fd < 0) return;
+
+    int old_flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, old_flags | O_NONBLOCK);
+
+    char drain[4096];
+    for (int i = 0; i < 50; i++) {
+        struct pollfd pfd = {fd, POLLIN, 0};
+        int ret = poll(&pfd, 1, 10);
+        if (ret > 0 && (pfd.revents & POLLIN)) {
+            ssize_t n = recv(fd, drain, sizeof(drain), 0);
+            if (n <= 0) break;
+        } else {
+            break;
+        }
+    }
+
+    fcntl(fd, F_SETFL, old_flags);
 }
 
 bool SocketHelper::is_connected() const {
