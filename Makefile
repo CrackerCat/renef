@@ -169,7 +169,7 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/strace/strace.c \
               src/agent/lua/api_strace.c
 
-.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local renef-strace
+.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local renef-strace renef-strace-android
 
 all: client server payload
 
@@ -443,6 +443,24 @@ $(RENEF_CLIENT_ANDROID): $(CLIENT_ANDROID_SRCS) $(CAPSTONE_LIB) $(ASIO_HEADER)
 	@echo "Note: Building without readline (use basic input in Termux)"
 	@mkdir -p $(ANDROID_BUILD)
 	$(CLANGXX) $(CLIENT_ANDROID_CXXFLAGS) $(CLIENT_ANDROID_SRCS) -o $@ $(CLIENT_ANDROID_LDFLAGS)
+	@if [ "$(BUILD_MODE)" = "release" ]; then \
+		$(TOOLCHAIN)/bin/llvm-strip $@ 2>/dev/null || true; \
+	fi
+	@echo "Built: $@"
+
+RENEF_STRACE_ANDROID := $(ANDROID_BUILD)/renef-strace
+
+renef-strace-android: $(RENEF_STRACE_ANDROID)
+
+$(RENEF_STRACE_ANDROID): src/binr/renef-strace/main.cpp
+	@echo "Building renef-strace for Android ARM64 ($(BUILD_MODE))..."
+	@mkdir -p $(ANDROID_BUILD)
+	$(CLANGXX) -std=c++17 \
+		$(SERVER_OPT_FLAGS) \
+		-static-libstdc++ \
+		-Wall -Wextra \
+		src/binr/renef-strace/main.cpp \
+		-o $@
 	@if [ "$(BUILD_MODE)" = "release" ]; then \
 		$(TOOLCHAIN)/bin/llvm-strip $@ 2>/dev/null || true; \
 	fi
