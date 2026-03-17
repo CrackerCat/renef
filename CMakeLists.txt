@@ -250,6 +250,19 @@ add_executable(renef-strace
     src/binr/renef-strace/main.cpp
 )
 
+target_include_directories(renef-strace PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+
+target_link_libraries(renef-strace
+    PRIVATE
+        asio
+        capstone
+        renef_core
+        ${CMAKE_DL_LIBS}
+)
 # Note: Android components (renef_server and libagent.so) are built
 # separately via Makefile using Android NDK cross-compilation.
 # This CMakeLists.txt only builds the native client (renef) for the host platform.

@@ -169,7 +169,7 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/strace/strace.c \
               src/agent/lua/api_strace.c
 
-.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local
+.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local renef-strace
 
 all: client server payload
 
@@ -269,6 +269,12 @@ client: $(ASIO_HEADER) $(CAPSTONE_HOST_LIB)
 		codesign -s - -f $(RENEF_CLIENT) 2>/dev/null || true; \
 	fi
 	@echo "Built: $(RENEF_CLIENT)"
+
+renef-strace: $(ASIO_HEADER) $(CAPSTONE_HOST_LIB)
+	@echo "Building renef-strace for $(HOST_OS)/$(HOST_ARCH) ($(BUILD_MODE))..."
+	@mkdir -p $(BUILD_DIR)
+	@cd $(BUILD_DIR) && cmake -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) .. && cmake --build . --target renef-strace
+	@echo "Built: $(BUILD_DIR)/renef-strace"
 
 server: $(RENEF_SERVER)
 
