@@ -103,6 +103,18 @@ jobs:
         if: matrix.build_android == true
         run: make renef-strace BUILD_MODE=release
 
+      - name: Build client-android
+        if: matrix.build_android == true
+        run: |
+          export NDK=$ANDROID_NDK_ROOT
+          make client-android BUILD_MODE=release
+
+      - name: Build renef-strace-android
+        if: matrix.build_android == true
+        run: |
+          export NDK=$ANDROID_NDK_ROOT
+          make renef-strace-android BUILD_MODE=release
+
       - name: Build client (macOS)
         if: startsWith(matrix.os, 'macos')
         run: make client BUILD_MODE=release
@@ -134,12 +146,22 @@ jobs:
           ls -lh build/android/
           file build/android/renef_server
           file build/android/libagent.so
+          file build/android/renef
+          file build/android/renef-strace
           if ! file build/android/renef_server | grep -q "aarch64"; then
             echo "ERROR: renef_server is not ARM64"
             exit 1
           fi
           if ! file build/android/libagent.so | grep -q "aarch64"; then
             echo "ERROR: libagent.so is not ARM64"
+            exit 1
+          fi
+          if ! file build/android/renef | grep -q "aarch64"; then
+            echo "ERROR: renef (android client) is not ARM64"
+            exit 1
+          fi
+          if ! file build/android/renef-strace | grep -q "aarch64"; then
+            echo "ERROR: renef-strace (android) is not ARM64"
             exit 1
           fi
 
@@ -172,6 +194,8 @@ jobs:
           path: |
             build/android/renef_server
             build/android/libagent.so
+            build/android/renef
+            build/android/renef-strace
           retention-days: 1
 
       - name: Upload macOS x64 client
@@ -229,6 +253,8 @@ jobs:
           cp artifacts/macos-arm64-client/renef-strace staging/macos-arm64/renef-strace 2>/dev/null || true
           cp artifacts/android-artifacts/renef_server staging/android/ 2>/dev/null || true
           cp artifacts/android-artifacts/libagent.so staging/android/ 2>/dev/null || true
+          cp artifacts/android-artifacts/renef staging/android/ 2>/dev/null || true
+          cp artifacts/android-artifacts/renef-strace staging/android/ 2>/dev/null || true
 
           chmod +x staging/linux/renef 2>/dev/null || true
           chmod +x staging/linux/renef-strace 2>/dev/null || true
@@ -237,6 +263,8 @@ jobs:
           chmod +x staging/macos-arm64/renef 2>/dev/null || true
           chmod +x staging/macos-arm64/renef-strace 2>/dev/null || true
           chmod +x staging/android/renef_server 2>/dev/null || true
+          chmod +x staging/android/renef 2>/dev/null || true
+          chmod +x staging/android/renef-strace 2>/dev/null || true
 
           if [ -f staging/linux/renef ]; then
             mkdir -p renef-linux-x64
@@ -269,6 +297,8 @@ jobs:
             mkdir -p renef-android-arm64
             cp staging/android/renef_server renef-android-arm64/
             cp staging/android/libagent.so renef-android-arm64/
+            cp staging/android/renef renef-android-arm64/ 2>/dev/null || true
+            cp staging/android/renef-strace renef-android-arm64/ 2>/dev/null || true
             cp README.md LICENSE renef-android-arm64/
             tar czf $RELEASE_DIR/renef-v${VERSION}-android-arm64.tar.gz renef-android-arm64/
           fi
@@ -282,6 +312,8 @@ jobs:
           cp staging/macos-arm64/renef-strace renef-v${VERSION}-all/macos-arm64/ 2>/dev/null || true
           cp staging/android/renef_server renef-v${VERSION}-all/android/ 2>/dev/null || true
           cp staging/android/libagent.so renef-v${VERSION}-all/android/ 2>/dev/null || true
+          cp staging/android/renef renef-v${VERSION}-all/android/ 2>/dev/null || true
+          cp staging/android/renef-strace renef-v${VERSION}-all/android/ 2>/dev/null || true
           cp -r scripts/* renef-v${VERSION}-all/scripts/ 2>/dev/null || true
           cp README.md LICENSE renef-v${VERSION}-all/
 
@@ -298,6 +330,8 @@ jobs:
           - macos-arm64/renef-strace   : macOS Silicon strace client
           - android/renef_server       : Android ARM64 server
           - android/libagent.so        : Android ARM64 payload
+          - android/renef              : Android ARM64 client (Termux)
+          - android/renef-strace       : Android ARM64 strace client (Termux)
 
           Quick Start (Linux):
           1. Extract archive
