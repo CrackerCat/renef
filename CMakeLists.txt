@@ -102,6 +102,7 @@ add_library(renef_core STATIC
     src/librenef/cmd/cmd_inspect.cpp
     src/librenef/cmd/cmd_list.cpp
     src/librenef/cmd/cmd_plugin.cpp
+    src/librenef/cmd/cmd_strace.cpp
 
     # Transport
     src/librenef/transport/uds.cpp
@@ -243,6 +244,11 @@ set_target_properties(renef PROPERTIES ENABLE_EXPORTS ON)
 if(UNIX AND NOT APPLE)
     target_link_options(renef PRIVATE -rdynamic)
 endif()
+
+# renef-strace standalone executable
+add_executable(renef-strace
+    src/binr/renef-strace/main.cpp
+)
 
 # Note: Android components (renef_server and libagent.so) are built
 # separately via Makefile using Android NDK cross-compilation.

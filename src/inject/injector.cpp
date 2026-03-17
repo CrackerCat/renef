@@ -373,6 +373,13 @@ bool inject(int pid, const char *so_path) {
   std::cout << "Target PID: " << pid << "\n";
   std::cout << "Payload: " << so_path << "\n\n";
 
+  uintptr_t agent_base = find_library_base(pid, "libagent.so");
+  if (agent_base != 0) {
+    std::cout << "  ✓ Agent already loaded at 0x" << std::hex << agent_base
+              << std::dec << ", skipping injection\n";
+    return true;
+  }
+
   std::cout << "[1/7] Finding libc base...\n";
   uintptr_t libc_base = find_libc_base(pid);
   if (!libc_base) {

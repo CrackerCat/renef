@@ -63,12 +63,21 @@ static std::map<std::string, std::vector<std::pair<std::string, std::string>>> l
     {"console", {
         {"log(\"", "Print to console"}
     }},
+    {"Syscall", {
+        {"trace(\"", "Trace specific syscalls"},
+        {"traceAll()", "Trace all syscalls"},
+        {"untrace(\"", "Stop tracing specific syscall"},
+        {"stop()", "Stop all tracing"},
+        {"list()", "List available syscalls"},
+        {"active()", "Show active traces"}
+    }},
     {"", {
         {"Module.", "Module operations (list, find, exports)"},
         {"Memory.", "Memory operations (scan, patch)"},
         {"hook(", "Install hook on function"},
         {"console.", "Console output"},
-        {"JNI.", "JNI type wrappers"}
+        {"JNI.", "JNI type wrappers"},
+        {"Syscall.", "Syscall tracing (trace, stop, list)"}
     }}
 };
 
@@ -744,7 +753,15 @@ LoadScriptResult preprocess_load_command(const std::string& command) {
 }
 
 bool is_streaming_command(const std::string& command) {
-    return command == "watch" || command.rfind("watch ", 0) == 0;
+    if (command == "watch" || command.rfind("watch ", 0) == 0) return true;
+    if (command.rfind("renef-strace", 0) == 0) {
+        std::string args = command.length() > 13 ? command.substr(13) : "";
+        if (args == "--stop" || args == "--list" || args == "--active" ||
+            args == "-h" || args == "--help")
+            return false;
+        return true;
+    }
+    return false;
 }
 
 bool check_quit_key() {
@@ -825,6 +842,18 @@ std::string send_command(const std::string& command) {
         }
         if (!connected) {
             return "";
+        }
+    }
+
+    // Drain any stale data from previous streaming commands (strace, watch, etc.)
+    {
+        int fd = conn.get_socket_fd();
+        if (fd >= 0) {
+            char drain[4096];
+            int old_flags = fcntl(fd, F_GETFL, 0);
+            fcntl(fd, F_SETFL, old_flags | O_NONBLOCK);
+            while (recv(fd, drain, sizeof(drain), 0) > 0) {}
+            fcntl(fd, F_SETFL, old_flags);
         }
     }
 

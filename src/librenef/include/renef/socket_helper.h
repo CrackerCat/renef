@@ -44,6 +44,12 @@ public:
     ssize_t receive_data(void* buffer, size_t size);
 
     /**
+     * Drain any pending data from agent socket buffer
+     * Useful after streaming commands (strace, watch) to clear stale output
+     */
+    void drain_buffer();
+
+    /**
      * Close connection to agent
      */
     void close_connection();

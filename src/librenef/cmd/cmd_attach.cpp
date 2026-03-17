@@ -124,7 +124,7 @@ public:
     bool is_injected = inject(params.pid, RENEF_PAYLOAD_PATH);
     if (is_injected) {
 
-      // Close old agent connection BEFORE establishing new one
+      sock.close_connection();
       CommandRegistry::instance().set_current_pid(params.pid);
 
       int con_pid = sock.ensure_connection(params.pid);
